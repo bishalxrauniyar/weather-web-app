@@ -46,9 +46,10 @@ function CameraSystem() {
       const tx = globeFocus.cx + (dx / len) * d;
       const ty = globeFocus.cy + (dy / len) * d;
       const tz = globeFocus.cz + (dz / len) * d;
-      camera.position.x += (tx - camera.position.x) * k * 0.5;
-      camera.position.y += (ty - camera.position.y) * k * 0.5;
-      camera.position.z += (tz - camera.position.z) * k * 0.5;
+      const fly = k * 1.2;
+      camera.position.x += (tx - camera.position.x) * fly;
+      camera.position.y += (ty - camera.position.y) * fly;
+      camera.position.z += (tz - camera.position.z) * fly;
       camera.lookAt(globeFocus.pinX, globeFocus.pinY, globeFocus.pinZ);
       return;
     }
@@ -76,6 +77,7 @@ function Lighting() {
   const isDaytime = useWeatherStore((s) => s.isDaytime);
   const earthTheme = useWeatherStore((s) => s.earthTheme);
   const sunRef = useRef();
+  const sunTargetRef = useRef();
   const isNightTheme = earthTheme === 'night';
 
   const config = useMemo(() => {
@@ -101,7 +103,18 @@ function Lighting() {
       c.y + sunBus.dir.y * 12,
       c.z + sunBus.dir.z * 12
     );
+    /* Aim the light at the globe's centre (not the world origin) so the
+       day side sits exactly under the sun's subpoint. */
+    if (sunTargetRef.current) sunTargetRef.current.position.set(c.x, c.y, c.z);
   });
+
+  /* The light's target can't be assigned in JSX (ref not mounted yet), so
+     wire it up once the objects exist. */
+  useEffect(() => {
+    if (sunRef.current && sunTargetRef.current) {
+      sunRef.current.target = sunTargetRef.current;
+    }
+  }, []);
 
   return (
     <>
@@ -115,6 +128,7 @@ function Lighting() {
         intensity={isNightTheme ? 0.25 : isDaytime ? 1.7 : 0.12}
         color={isDaytime ? '#ffe8c8' : '#4466aa'}
       />
+      <object3D ref={sunTargetRef} position={[0, -1.3, -3.5]} />
       <pointLight position={[-5, 10, -10]} intensity={isNightTheme ? 0.1 : isDaytime ? 0.35 : 0.06} color="#6688cc" />
       <pointLight position={[0, 2, 12]} intensity={isNightTheme ? 0.12 : isDaytime ? 0.4 : 0.05} color="#cfe0ff" />
     </>

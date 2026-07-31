@@ -272,17 +272,17 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-6 pointer-events-none"
           >
-            <div className="detail-panel pointer-events-auto w-full max-w-xl">
-              {/* Accent edge */}
+            <div className="detail-panel pointer-events-auto w-full max-w-3xl p-[30px]! my-5!">
+              {/* Accent edge — spans the full panel width despite the padding */}
               <div
-                className="h-[3px]"
+                className="-mx-[30px]! -mt-[30px]! h-[3px]"
                 style={{
                   background: `linear-gradient(90deg, var(--accent), transparent 70%)`,
                 }}
               />
 
               {/* Header */}
-              <div className="relative overflow-hidden px-8 pt-8 pb-7">
+              <div className="relative overflow-hidden px-[50px] pt-12 pb-10">
                 <div
                   className="absolute inset-0 pointer-events-none"
                   style={{
@@ -290,11 +290,11 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                   }}
                 />
                 <div className="relative flex items-start justify-between gap-4">
-                  <div className="flex items-center gap-4.5">
+                  <div className="flex items-center gap-5">
                     <motion.span
                       animate={{ y: [0, -3, 0], rotate: [0, -3, 0] }}
                       transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
-                      className="w-14 h-14 rounded-2xl flex items-center justify-center"
+                      className="w-16 h-16 rounded-2xl flex items-center justify-center"
                       style={{
                         background: 'linear-gradient(145deg, var(--accent-soft), rgba(255,255,255,0.04))',
                         border: '1px solid var(--line-strong)',
@@ -302,24 +302,13 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                         boxShadow: '0 8px 24px -8px var(--accent-soft)',
                       }}
                     >
-                      <MetricIcon name={data.icon} size={26} />
+                      <MetricIcon name={data.icon} size={30} />
                     </motion.span>
                     <div>
-                      <h2 className="text-[26px] font-semibold leading-tight tracking-tight">
+                      <h2 className="text-[34px] font-semibold leading-tight tracking-tight">
                         {data.headline}
                       </h2>
-                      <span
-                        className="inline-flex mt-2 items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.12em] px-2.5 py-1 rounded-full"
-                        style={{
-                          color: 'var(--accent)',
-                          background: 'var(--accent-soft)',
-                          border: '1px solid var(--line)',
-                        }}
-                      >
-                        <MetricIcon name={data.icon} size={11} />
-                        {type.replace(/_/g, ' ').toLowerCase()}
-                      </span>
-                      <span className="block mt-2 text-xs text-white/45">
+                      <span className="block mt-2 text-sm text-white/45">
                         {location?.name}
                         {weather?.weather?.[0]?.description
                           ? ` · ${weather.weather[0].description}`
@@ -330,7 +319,7 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                   <button
                     onClick={onClose}
                     aria-label="Close"
-                    className="w-10 h-10 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/12 hover:rotate-90 transition-all duration-200 text-white/60 hover:text-white shrink-0 border border-white/10"
+                    className="w-11 h-11 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/12 hover:rotate-90 transition-all duration-200 text-white/60 hover:text-white shrink-0 border border-white/10"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -339,80 +328,86 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                 </div>
               </div>
 
-              {/* Stats grid */}
-              <div className="px-8 grid grid-cols-2 gap-4">
-                {data.stats.map((stat, i) => (
-                  <motion.div
-                    key={stat.label}
-                    initial={{ opacity: 0, y: 14 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.08 + i * 0.055, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-                    whileHover={{ y: -2 }}
-                    className="relative overflow-hidden rounded-2xl px-5 py-4 border transition-colors duration-200 group"
-                    style={{
-                      background: 'var(--panel-soft)',
-                      borderColor: 'var(--line)',
-                    }}
+              {/* Hero stat */}
+              <div className="px-[50px]">
+                <motion.div
+                  initial={{ opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.06, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                >
+                  <span className="label-text">{data.stats[0].label}</span>
+                  <p
+                    className="mt-3 text-[68px] font-bold leading-none tracking-tight"
+                    style={{ fontFamily: 'var(--font-display)' }}
                   >
-                    <span className="absolute left-0 top-0 bottom-0 w-[3px] opacity-50 group-hover:opacity-100 transition-opacity duration-200"
-                      style={{ background: 'var(--accent)' }} />
-                    <div className="flex items-center gap-2.5 mb-2.5">
-                      <span className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-white/50 group-hover:text-accent transition-colors duration-200">
-                        <MetricIcon name={data.icon} size={15} />
-                      </span>
-                      <span className="label-text">{stat.label}</span>
+                    {data.stats[0].value}
+                  </p>
+                  {data.stats[0].pct != null && (
+                    <div className="mt-6 h-2.5 rounded-full bg-white/[0.06] overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${Math.round(data.stats[0].pct * 100)}%` }}
+                        transition={{ delay: 0.2, duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+                        className="h-full rounded-full"
+                        style={{
+                          background:
+                            data.stats[0].barColor ||
+                            'linear-gradient(90deg, var(--accent), #5ee0ff)',
+                        }}
+                      />
                     </div>
-                    <p className="value-text text-[22px] font-[var(--font-display)] font-bold leading-tight tracking-tight">
-                      {stat.value}
-                    </p>
-                    {stat.pct != null && (
-                      <div className="mt-2.5 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${Math.round(stat.pct * 100)}%` }}
-                          transition={{ delay: 0.18 + i * 0.055, duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-                          className="h-full rounded-full"
-                          style={{
-                            background:
-                              stat.barColor ||
-                              'linear-gradient(90deg, var(--accent), #5ee0ff)',
-                          }}
-                        />
-                      </div>
-                    )}
-                  </motion.div>
-                ))}
+                  )}
+                </motion.div>
               </div>
 
+              {/* Supporting stats as a slim list */}
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.12, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+                className="mx-[50px] mt-8 border-t border-b border-white/[0.07] divide-y divide-white/[0.05]"
+              >
+                {data.stats.slice(1).map((stat, i) => (
+                  <div key={stat.label} className="flex items-center justify-between py-[26px]">
+                    <span className="text-[15px] text-white/45">{stat.label}</span>
+                    <span className="text-lg font-semibold tracking-tight text-white/90">
+                      {stat.value}
+                    </span>
+                  </div>
+                ))}
+              </motion.div>
+
               {type === 'TEMPERATURE' && (
-                <div className="px-8">
+                <div className="px-[50px]">
                   <Sparkline temps={buildSparkline(forecast?.list)} />
                 </div>
               )}
 
               {/* Practical advice */}
-              <div className="px-8 pt-4 pb-8">
-                <div
-                  className="rounded-2xl p-5"
+              <div className="px-[50px] pt-8 pb-12">
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                  className="relative overflow-hidden rounded-2xl p-[26px] pl-[30px]"
                   style={{
-                    background: `linear-gradient(135deg, var(--accent-soft), transparent 60%)`,
+                    background: `linear-gradient(135deg, var(--accent-soft), transparent 65%)`,
                     border: '1px solid var(--line-strong)',
-                    borderLeft: '3px solid var(--accent)',
                   }}
                 >
+                  <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: 'var(--accent)' }} />
                   <p
-                    className="text-[10px] font-semibold uppercase tracking-[0.13em] mb-2"
+                    className="text-[11px] font-semibold uppercase tracking-[0.13em] mb-3"
                     style={{ color: 'var(--accent)' }}
                   >
                     What it means for you
                   </p>
-                  <p className="text-sm text-white/75 leading-relaxed">{data.advice}</p>
-                </div>
-                <div className="flex items-center justify-between mt-5">
-                  <p className="text-xs text-white/30">Press ESC or click outside to close</p>
+                  <p className="text-base text-white/75 leading-relaxed">{data.advice}</p>
+                </motion.div>
+                <div className="flex justify-end mt-7">
                   <button
                     onClick={onClose}
-                    className="text-xs font-semibold px-4 py-2 rounded-full transition-colors"
+                    className="text-sm font-semibold px-7 py-3 rounded-full transition-colors"
                     style={{
                       color: 'var(--accent)',
                       background: 'var(--accent-soft)',

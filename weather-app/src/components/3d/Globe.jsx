@@ -36,7 +36,9 @@ export const sunBus = {
 };
 
 /* Zoom-shrink factor for pins + labels — written each frame from the camera
-   distance, read by PinMarker/TravelPin so they shrink while flying in. */
+   distance, read by PinMarker/TravelPin so they shrink while flying in.
+   Squared falloff: the closer the camera gets, the smaller the text/pins
+   become (linear scaling would keep them looking the same size on screen). */
 const pinZoom = { value: 1 };
 
 /* 4096×2048 earth maps (three-globe demo assets, CORS-open) — loaded at
@@ -662,7 +664,7 @@ export default function Globe() {
     /* Throttle rapid click storms — each hit fires weather + forecast + AQI
        + reverse-geocode, and 4-6 concurrent clicks will 429 the APIs. */
     const now = performance.now();
-    if (now - lastClickAt.current < 500) return;
+    if (now - lastClickAt.current < 250) return;
     lastClickAt.current = now;
     clickedRef.current = true;
 
@@ -732,7 +734,8 @@ export default function Globe() {
   }, [selectFromClick]);
 
   /* Mouse wheel: zoom the camera in/out (works whether focused or free-spinning).
-     Double-click: quick zoom-in, Google-Earth style. */
+     (No double-click zoom — a quick second click means "pick another place",
+     not "zoom in".) */
   useEffect(() => {
     const el = gl.domElement;
     const onWheel = (e) => {
@@ -743,15 +746,9 @@ export default function Globe() {
         11.5
       );
     };
-    const onDblClick = (e) => {
-      e.preventDefault();
-      camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 3, 1.15, 11.5);
-    };
     el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('dblclick', onDblClick);
     return () => {
       el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('dblclick', onDblClick);
     };
   }, [gl]);
 
@@ -836,7 +833,10 @@ export default function Globe() {
         camera.position.y - gp.y,
         camera.position.z - gp.z
       );
-      pinZoom.value = THREE.MathUtils.clamp((dist - 4.65) / (15 - 4.65), 0.22, 1);
+      /* Squared curve + low floor: the text keeps shrinking while zooming in
+         instead of plateauing at 22%. */
+      const zt = THREE.MathUtils.clamp((dist - 4.65) / (15 - 4.65), 0, 1);
+      pinZoom.value = 0.1 + 0.9 * zt * zt;
 
       if (focused && rot) {
         globeFocus.cx = gp.x;
@@ -859,6 +859,9 @@ export default function Globe() {
     }
     if (groupRef.current) {
       groupRef.current.position.y = -2 + Math.sin(clock.elapsedTime * 0.15) * 0.08;
+      /* Keep the sun light + its target anchored to the globe's real
+         floating centre, not the initial JSX position. */
+      sunBus.center.copy(groupRef.current.position);
     }
   });
 
@@ -906,12 +909,12 @@ export default function Globe() {
         <meshPhongMaterial
           ref={matRef}
           map={albedoMap}
-          specularMap={hiRes?.specular || specularMap}
+          specularMap={specularMap}
           specular={new THREE.Color('#777777')}
           shininess={10}
-          normalMap={hiRes?.normal || normalMap}
+          normalMap={normalMap}
           normalScale={new THREE.Vector2(1, 1)}
-          bumpMap={hiRes?.normal || normalMap}
+          bumpMap={normalMap}
           bumpScale={0.025}
           emissive={new THREE.Color('#16263a')}
           emissiveIntensity={0.28}
@@ -932,7 +935,7 @@ export default function Globe() {
               /* A drag that merely ends over a pin must not fly anywhere,
                  and rapid double-selection is throttled like map clicks. */
               const now = performance.now();
-              if (dragState.current.moved >= 8 || now - lastClickAt.current < 500) return;
+              if (dragState.current.moved >= 8 || now - lastClickAt.current < 250) return;
               lastClickAt.current = now;
               setLocation({ name: d.name, lat: d.lat, lon: d.lon });
             }}
