@@ -20,6 +20,23 @@ const getWeatherSeverity = (code) => {
   return 'normal';
 };
 
+/* Solar day/night from pure astronomy — no API needed. Used as an immediate
+   fallback whenever the location changes, so day/night stays correct even if
+   the weather fetch for the new place is slow or rate-limited (setWeather
+   overwrites it with the API's sunrise/sunset when that arrives). */
+const sunDaytime = (lat, lon) => {
+  const now = new Date();
+  const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
+  const decl = (23.44 * Math.sin(((2 * Math.PI) / 365) * (dayOfYear - 81)) * Math.PI) / 180;
+  const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const hourAngle = ((utcHours + lon / 15 - 12) * 15 * Math.PI) / 180;
+  const latRad = (lat * Math.PI) / 180;
+  const alt = Math.asin(
+    Math.sin(latRad) * Math.sin(decl) + Math.cos(latRad) * Math.cos(decl) * Math.cos(hourAngle)
+  );
+  return alt > -0.012; /* sun above ~-0.7° — matches the sunrise/sunset definition */
+};
+
 export const useWeatherStore = create((set, get) => ({
   weather: null,
   forecast: null,
@@ -32,6 +49,7 @@ export const useWeatherStore = create((set, get) => ({
   weatherType: 'clear',
   weatherSeverity: 'normal',
   isDaytime: true,
+  interacted: false,
   location: { name: 'London', lat: 51.5074, lon: -0.1278, country: '', state: '' },
   currentLocation: 'London',
   searchResults: [],
@@ -61,6 +79,7 @@ export const useWeatherStore = create((set, get) => ({
   },
   travelMode: false,
   travelDestinations: [],
+  earthTheme: 'satellite',
   communityReports: [],
   smartHomeSettings: {
     autoAdjust: false,
@@ -106,8 +125,16 @@ export const useWeatherStore = create((set, get) => ({
   setLocation: (location) => {
     const recent = get().recentSearches;
     const updated = [location.name, ...recent.filter((n) => n !== location.name)].slice(0, 10);
+    const prev = get().location;
+    const moved = prev.lat !== location.lat || prev.lon !== location.lon;
     localStorage.setItem('recentSearches', JSON.stringify(updated));
-    set({ location, recentSearches: updated, currentLocation: location.name });
+    set({
+      location,
+      recentSearches: updated,
+      currentLocation: location.name,
+      isDaytime: sunDaytime(location.lat, location.lon),
+      interacted: moved ? true : get().interacted,
+    });
   },
 
   setTravelDestinations: (destinations) => {
@@ -162,6 +189,8 @@ export const useWeatherStore = create((set, get) => ({
   })),
 
   setTravelMode: (enabled) => set({ travelMode: enabled }),
+
+  setEarthTheme: (theme) => set({ earthTheme: theme }),
 
   setAIInsights: (insights) => set({ aiInsights: insights }),
 

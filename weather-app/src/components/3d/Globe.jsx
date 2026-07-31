@@ -17,12 +17,107 @@ const cloudinessByType = {
 
 /* Shared camera/sun state: CameraSystem (WeatherScene) reads these each frame
    so the ambient drift doesn't fight the focused zoom, and so the sun light
-   orbits the globe to match the true day/night terminator. */
-export const globeFocus = { active: false, pinY: 0 };
+   orbits the globe to match the true day/night terminator. The focused camera
+   ray-aims at the pin's actual world position, so it stays dead-centre even
+   while the globe is tumbled. */
+export const globeFocus = {
+  active: false,
+  pinX: 0,
+  pinY: 0,
+  pinZ: 0,
+  cx: 0,
+  cy: -1.3,
+  cz: -3.5,
+  dist: 14,
+};
 export const sunBus = {
   dir: new THREE.Vector3(0.5, 0.6, 0.6),
   center: new THREE.Vector3(0, -1.3, -3.5),
 };
+
+/* Zoom-shrink factor for pins + labels — written each frame from the camera
+   distance, read by PinMarker/TravelPin so they shrink while flying in. */
+const pinZoom = { value: 1 };
+
+/* 4096×2048 earth maps (three-globe demo assets, CORS-open) — loaded at
+   runtime on top of the bundled 2048 textures when the network allows. */
+const HI_RES_TEXTURES = [
+  { key: 'map', url: 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg', srgb: true },
+  { key: 'normal', url: 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-topology.png', srgb: false },
+  { key: 'specular', url: 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-water.png', srgb: true },
+  { key: 'lights', url: 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-night.jpg', srgb: true },
+];
+
+function loadHiResImage(url) {
+  return fetch(url)
+    .then((r) => {
+      if (!r.ok) throw new Error('hi-res texture failed');
+      return r.blob();
+    })
+    .then(
+      (blob) =>
+        new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = URL.createObjectURL(blob);
+        })
+    );
+}
+
+/* Google-Earth-style map + night themes, derived from the satellite imagery:
+   - map:   flat-style terrain colours (soft water blues, tan/green land)
+   - night: dimmed albedo — the city-lights overlay carries the scene */
+function buildThemeTextures(srcImage) {
+  const mk = (canvas) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 16;
+    return tex;
+  };
+
+  const mapCanvas = document.createElement('canvas');
+  mapCanvas.width = srcImage.width;
+  mapCanvas.height = srcImage.height;
+  const mapCtx = mapCanvas.getContext('2d', { willReadFrequently: true });
+  mapCtx.drawImage(srcImage, 0, 0);
+  const mapData = mapCtx.getImageData(0, 0, mapCanvas.width, mapCanvas.height);
+  const d = mapData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const isWater = b > r + 14 && b > g + 10 && lum < 150;
+    if (isWater) {
+      d[i] = 60 + lum * 0.22;
+      d[i + 1] = 108 + lum * 0.18;
+      d[i + 2] = 170 + lum * 0.1;
+    } else {
+      const t = Math.min(1, Math.max(0, (lum - 30) / 190));
+      d[i] = 138 + (216 - 138) * t;
+      d[i + 1] = 156 + (205 - 156) * t;
+      d[i + 2] = 128 + (180 - 128) * t;
+    }
+  }
+  mapCtx.putImageData(mapData, 0, 0);
+
+  const nightCanvas = document.createElement('canvas');
+  nightCanvas.width = srcImage.width;
+  nightCanvas.height = srcImage.height;
+  const nightCtx = nightCanvas.getContext('2d', { willReadFrequently: true });
+  nightCtx.drawImage(srcImage, 0, 0);
+  const nightData = nightCtx.getImageData(0, 0, nightCanvas.width, nightCanvas.height);
+  const nd = nightData.data;
+  for (let i = 0; i < nd.length; i += 4) {
+    nd[i] *= 0.1;
+    nd[i + 1] *= 0.11;
+    nd[i + 2] *= 0.18;
+  }
+  nightCtx.putImageData(nightData, 0, 0);
+
+  return { map: mk(mapCanvas), night: mk(nightCanvas) };
+}
 
 /* Real-time global cloud cover from NASA GIBS (MODIS) — equirect 1024×512.
    Falls back to the bundled cloud map when the network/NASA is unavailable. */
@@ -113,13 +208,12 @@ function PinMarker({ position }) {
     burstRef.current = 1;
   }, [position]);
 
-  useFrame(({ clock, camera }, delta) => {
-    const t = clock.elapsedTime;
+  useFrame((_state, delta) => {
+    const t = _state.clock.elapsedTime;
 
     /* The pin shrinks as the camera zooms into the surface — at full zoom
        it is a small precise marker instead of covering the whole city. */
-    const target = THREE.MathUtils.clamp((camera.position.z - 1.6) / 8.9, 0.22, 1);
-    zoomScale.current += (target - zoomScale.current) * Math.min(1, delta * 4);
+    zoomScale.current += (pinZoom.value - zoomScale.current) * Math.min(1, delta * 4);
     if (scaleRef.current) scaleRef.current.scale.setScalar(zoomScale.current);
 
     if (ringRef.current) {
@@ -163,13 +257,12 @@ function TravelPin({ position, onPinDown, onFly }) {
   const visualRef = useRef();
   const zoomScale = useRef(1);
 
-  useFrame(({ clock, camera }, delta) => {
-    const t = clock.elapsedTime;
+  useFrame((_state, delta) => {
+    const t = _state.clock.elapsedTime;
 
     /* Same zoom-shrink as the main pin, so pins stay proportional while
        flying in — but the invisible hit area stays full size for clicks. */
-    const target = THREE.MathUtils.clamp((camera.position.z - 1.6) / 8.9, 0.22, 1);
-    zoomScale.current += (target - zoomScale.current) * Math.min(1, delta * 4);
+    zoomScale.current += (pinZoom.value - zoomScale.current) * Math.min(1, delta * 4);
     if (visualRef.current) visualRef.current.scale.setScalar(zoomScale.current);
 
     if (ringRef.current) {
@@ -193,7 +286,8 @@ function TravelPin({ position, onPinDown, onFly }) {
           <meshBasicMaterial color="#39d9ff" />
         </mesh>
       </group>
-      {/* Big invisible hit area — easy to click, stops the globe click handler */}
+      {/* Invisible hit area — generous but only around the pin itself, so
+          clicks on nearby places still select the place, not the pin */}
       <mesh
         onPointerDown={(e) => {
           e.stopPropagation();
@@ -206,7 +300,7 @@ function TravelPin({ position, onPinDown, onFly }) {
         onPointerOver={() => (document.body.style.cursor = 'pointer')}
         onPointerOut={() => (document.body.style.cursor = '')}
       >
-        <sphereGeometry args={[0.16, 16, 16]} />
+        <sphereGeometry args={[0.09, 16, 16]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
     </group>
@@ -254,10 +348,13 @@ export default function Globe() {
   const lightsRef = useRef();
   const labelRef = useRef();
   const labelScale = useRef(1);
+  const tmpQuat = useRef(new THREE.Quaternion());
+  const pinWorld = useRef(new THREE.Vector3());
   const loc = useWeatherStore((s) => s.location);
   const setLocation = useWeatherStore((s) => s.setLocation);
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
+  const earthTheme = useWeatherStore((s) => s.earthTheme);
   const lat = loc?.lat ?? 51.5074;
   const lon = loc?.lon ?? -0.1278;
 
@@ -269,11 +366,12 @@ export default function Globe() {
     []
   );
 
-  const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState(null);
   const [geoFor, setGeoFor] = useState(null);
   const [focused, setFocused] = useState(false);
   const [liveClouds, setLiveClouds] = useState(null);
+  const [hiRes, setHiRes] = useState(null);
+  const [themeTextures, setThemeTextures] = useState(null);
   const dragState = useRef({ x: 0, rotY: 0, moved: 0 });
   const hovering = useRef(false);
   const targetRot = useRef(null);
@@ -288,6 +386,31 @@ export default function Globe() {
     let cancelled = false;
     loadLiveClouds()
       .then((img) => !cancelled && setLiveClouds(img))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* 4096px earth maps on top of the bundled 2048s (silently falls back) */
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(HI_RES_TEXTURES.map((t) => loadHiResImage(t.url)))
+      .then((imgs) => {
+        if (cancelled) return;
+        const mk = (img, srgb) => {
+          const tex = new THREE.CanvasTexture(img);
+          if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+          tex.anisotropy = 16;
+          return tex;
+        };
+        setHiRes({
+          map: mk(imgs[0], true),
+          normal: mk(imgs[1], false),
+          specular: mk(imgs[2], true),
+          lights: mk(imgs[3], true),
+        });
+      })
       .catch(() => {});
     return () => {
       cancelled = true;
@@ -327,10 +450,30 @@ export default function Globe() {
         targetRot.current = (rotateRef.current?.rotation.y ?? 0) - 0.25;
         setFocused(false);
         globeFocus.active = false;
+      } else if (e.key === 'ArrowUp') {
+        if (rotateRef.current) {
+          rotateRef.current.rotation.x = THREE.MathUtils.clamp(
+            rotateRef.current.rotation.x + 0.18,
+            -1.35,
+            1.35
+          );
+        }
+        setFocused(false);
+        globeFocus.active = false;
+      } else if (e.key === 'ArrowDown') {
+        if (rotateRef.current) {
+          rotateRef.current.rotation.x = THREE.MathUtils.clamp(
+            rotateRef.current.rotation.x - 0.18,
+            -1.35,
+            1.35
+          );
+        }
+        setFocused(false);
+        globeFocus.active = false;
       } else if (e.key === '+' || e.key === '=') {
-        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 0.6, 2.0, 11.5);
+        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 0.6, 1.15, 11.5);
       } else if (e.key === '-' || e.key === '_') {
-        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z + 0.6, 2.0, 11.5);
+        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z + 0.6, 1.15, 11.5);
       } else {
         return;
       }
@@ -359,11 +502,31 @@ export default function Globe() {
     lightsMap.anisotropy = 16;
   }, [atmosMap, normalMap, specularMap, lightsMap]);
 
+  /* Map / Night theme textures — derived from whichever satellite map is
+     active (4096 when available, otherwise the bundled 2048). */
+  const themeSource = hiRes?.map || atmosMap;
+  useEffect(() => {
+    const img = themeSource?.image;
+    if (!img || !img.width) return;
+    let cancelled = false;
+    const id = setTimeout(() => {
+      try {
+        const built = buildThemeTextures(img);
+        if (!cancelled) setThemeTextures(built);
+      } catch {
+        /* keep satellite if processing fails */
+      }
+    }, 80);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [themeSource]);
+
   const cloudTexture = useMemo(
     () => makeCloudTexture(cloudsImage.image, weatherType, liveClouds),
     [cloudsImage, weatherType, liveClouds]
   );
-
   /* Day/night terminator: city lights only on the dark side */
   const lightsMaterial = useMemo(
     () =>
@@ -372,6 +535,7 @@ export default function Globe() {
           map: { value: lightsMap },
           sunDir: { value: sunBase.current.clone() },
           uDarkness: { value: 0 },
+          uForceNight: { value: 0 },
         },
         vertexShader: `
           varying vec2 vUv;
@@ -386,11 +550,12 @@ export default function Globe() {
           uniform sampler2D map;
           uniform vec3 sunDir;
           uniform float uDarkness;
+          uniform float uForceNight;
           varying vec2 vUv;
           varying vec3 vWorldNormal;
           void main() {
             float facing = dot(normalize(vWorldNormal), sunDir);
-            float night = smoothstep(0.12, -0.08, facing);
+            float night = mix(smoothstep(0.12, -0.08, facing), 1.0, uForceNight);
             vec4 tex = texture2D(map, vUv);
             gl_FragColor = vec4(tex.rgb * night * uDarkness, 1.0);
           }
@@ -401,8 +566,25 @@ export default function Globe() {
     [lightsMap]
   );
 
+  /* Swap in the 4096px night map once it arrives */
+  useEffect(() => {
+    if (hiRes?.lights) lightsMaterial.uniforms.map.value = hiRes.lights;
+  }, [hiRes, lightsMaterial]);
+
   const pinPosition = useMemo(() => latLonToVec3(lat, lon, 1.5), [lat, lon]);
   const labelTexture = useMemo(() => makeLabelTexture(loc?.name || ''), [loc?.name]);
+
+  /* Theme → albedo map: satellite uses the photo maps; map/night use the
+     derived variants (falling back to the photo map while they render). */
+  const albedoMap =
+    earthTheme === 'map'
+      ? themeTextures?.map || hiRes?.map || atmosMap
+      : earthTheme === 'night'
+        ? themeTextures?.night || hiRes?.map || atmosMap
+        : hiRes?.map || atmosMap;
+
+  const cloudOpacity = earthTheme === 'night' ? 0.16 : earthTheme === 'map' ? 0.26 : 0.32;
+  const isNightTheme = earthTheme === 'night';
 
   /* Reverse-geocode the clicked point once resolved (race-proof: only applies to the coords it was fetched for) */
   useEffect(() => {
@@ -455,21 +637,26 @@ export default function Globe() {
   }, [wxName, loc, setLocation]);
 
   /* Rotate the globe so a newly selected location faces the camera, then zoom in on it.
-     Map clicks keep the user's current zoom; searches always go to the deep view. */
+     Searches always go to the deep view; map clicks keep the user's current zoom.
+     On the initial load (no user interaction yet) the globe only aligns to the
+     default city — no camera dive, so the world opens in the full-earth view. */
+  const interacted = useWeatherStore((s) => s.interacted);
   useEffect(() => {
     if (loc?.lat == null || loc?.lon == null) return;
     const dir = latLonToVec3(loc.lat, loc.lon, 1);
     targetRot.current = -Math.atan2(dir.x, dir.z);
-    const pinY = 3.3 * Math.sin((loc.lat * Math.PI) / 180) - 1.3;
+    if (!interacted) {
+      clickedRef.current = false;
+      return;
+    }
     camTarget.current = {
-      z: clickedRef.current ? Math.min(camTarget.current.z, 2.5) : 2.5,
-      y: pinY,
+      z: clickedRef.current ? camTarget.current.z : 1.6,
+      y: 0,
     };
     clickedRef.current = false;
-    globeFocus.pinY = pinY;
     setFocused(true);
     globeFocus.active = true;
-  }, [loc?.lat, loc?.lon]);
+  }, [loc?.lat, loc?.lon, interacted]);
 
   const selectFromClick = useCallback((event) => {
     /* Throttle rapid click storms — each hit fires weather + forecast + AQI
@@ -513,20 +700,27 @@ export default function Globe() {
     const onMove = (e) => {
       if (!pointerDown.current) return;
       const dx = e.clientX - dragState.current.x;
-      dragState.current.moved = Math.max(dragState.current.moved, Math.abs(dx));
+      const dy = e.clientY - dragState.current.y;
+      dragState.current.moved = Math.max(dragState.current.moved, Math.abs(dx), Math.abs(dy));
       targetRot.current = null;
       if (rotateRef.current) {
+        /* Drag = free 360° navigation: horizontal sweeps yaw around the
+           pole, vertical sweeps pitch so you can tilt down to the poles. */
         rotateRef.current.rotation.y = dragState.current.rotY + dx * 0.006;
+        rotateRef.current.rotation.x = THREE.MathUtils.clamp(
+          dragState.current.rotX - dy * 0.005,
+          -1.35,
+          1.35
+        );
       }
     };
 
     const onUp = (e) => {
       if (!pointerDown.current) return;
       pointerDown.current = false;
-      setDragging(false);
       const pinHit = pinHitRef.current;
       pinHitRef.current = false;
-      if (!pinHit && dragState.current.moved < 6) selectFromClick(e);
+      if (!pinHit && dragState.current.moved < 10) selectFromClick(e);
     };
 
     window.addEventListener('pointermove', onMove);
@@ -537,19 +731,28 @@ export default function Globe() {
     };
   }, [selectFromClick]);
 
-  /* Mouse wheel: zoom the camera in/out (works whether focused or free-spinning) */
+  /* Mouse wheel: zoom the camera in/out (works whether focused or free-spinning).
+     Double-click: quick zoom-in, Google-Earth style. */
   useEffect(() => {
     const el = gl.domElement;
     const onWheel = (e) => {
       e.preventDefault();
       camTarget.current.z = THREE.MathUtils.clamp(
         camTarget.current.z + e.deltaY * 0.0075,
-        2.0,
+        1.15,
         11.5
       );
     };
+    const onDblClick = (e) => {
+      e.preventDefault();
+      camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 3, 1.15, 11.5);
+    };
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    el.addEventListener('dblclick', onDblClick);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('dblclick', onDblClick);
+    };
   }, [gl]);
 
   const travelDestinations = useWeatherStore((s) => s.travelDestinations);
@@ -563,48 +766,58 @@ export default function Globe() {
   );
 
   useFrame(({ clock, camera }, delta) => {
-    const manual = dragging || hovering.current;
     const zoom = reducedMotion ? 1 : Math.min(1, delta * 3);
+    const rot = rotateRef.current;
 
-    camera.position.z += (camTarget.current.z - camera.position.z) * zoom;
-    camera.position.y += ((focused ? camTarget.current.y : 0) - camera.position.y) * zoom;
+    /* Unfocused: keep the camera at the user's zoom distance (wheel / +/-).
+       While focused the CameraSystem fully owns the camera and ray-aims it
+       at the pin, so we only publish the state it needs below. */
+    if (!focused) {
+      camera.position.z += (camTarget.current.z - camera.position.z) * zoom;
+    }
 
-    if (targetRot.current != null && rotateRef.current) {
-      const diff = wrapAngle(targetRot.current - rotateRef.current.rotation.y);
-      rotateRef.current.rotation.y += diff * Math.min(1, delta * 3);
-      if (Math.abs(diff) < 0.004) {
-        rotateRef.current.rotation.y = targetRot.current;
-        targetRot.current = null;
+    if (rot) {
+      /* Navigation is user-driven: drag sweeps yaw (360°) and pitch. The
+         user's tilt is kept while exploring; only a focused location
+         settles the globe upright so the city lines up with the camera. */
+      if (focused) {
+        const k = Math.min(1, delta * 2);
+        rot.rotation.x += (0 - rot.rotation.x) * k;
+        rot.rotation.z += (0 - rot.rotation.z) * k;
       }
-    } else if (!manual && !focused && !reducedMotion && rotateRef.current) {
-      /* Full 360° drift while exploring — the earth keeps turning and the
-         day/night terminator sweeps across it. Frozen while focused so the
-         world stays put under the cursor (clicks stay accurate). */
-      rotateRef.current.rotation.y += delta * 0.045;
+      rot.rotation.z += (0 - rot.rotation.z) * Math.min(1, delta * 2);
+
+      if (targetRot.current != null) {
+        const diff = wrapAngle(targetRot.current - rot.rotation.y);
+        rot.rotation.y += diff * Math.min(1, delta * 3);
+        if (Math.abs(diff) < 0.004) {
+          rot.rotation.y = targetRot.current;
+          targetRot.current = null;
+        }
+      }
     }
 
     if (cloudsRef.current) {
       cloudsRef.current.rotation.y += delta * 0.07;
     }
-    if (lightsRef.current) {
-      /* The lights overlay must stay glued to the surface — it has its own
-         material matrix but we keep its rotation locked to the earth's. */
-      lightsRef.current.rotation.y = rotateRef.current?.rotation.y ?? 0;
+    if (lightsRef.current && rot) {
+      /* The lights overlay must stay glued to the surface through the whole
+         tumble — copy the full euler so its normals match the earth's. */
+      lightsRef.current.rotation.copy(rot.rotation);
     }
-    if (lightsMaterial) {
-      const rot = rotateRef.current?.rotation.y ?? 0;
-      lightsMaterial.uniforms.sunDir.value
-        .copy(sunBase.current)
-        .applyAxisAngle(new THREE.Vector3(0, 1, 0), rot);
+    if (lightsMaterial && rot) {
+      /* Rotate the sun direction by the FULL earth rotation (not just y) so
+         the day/night terminator stays true during the 360° tumble. */
+      tmpQuat.current.setFromEuler(rot.rotation);
+      sunBus.dir.copy(sunBase.current).applyQuaternion(tmpQuat.current).normalize();
+      lightsMaterial.uniforms.sunDir.value.copy(sunBus.dir);
       const target = isDaytime ? 0 : 1;
       darkness.current += (target - darkness.current) * Math.min(1, delta * 2);
       lightsMaterial.uniforms.uDarkness.value = darkness.current;
-      /* Publish the world-space sun direction so Lighting() can orbit the
-         actual light to the true sub-solar point (rotation reflects day/night). */
-      sunBus.dir
-        .copy(sunBase.current)
-        .applyAxisAngle(new THREE.Vector3(0, 1, 0), rot)
-        .normalize();
+      /* Night theme = the whole earth is dark, city lights on everywhere */
+      const nightTarget = isNightTheme ? 1 : 0;
+      const forceNight = lightsMaterial.uniforms.uForceNight;
+      forceNight.value += (nightTarget - forceNight.value) * Math.min(1, delta * 3);
     }
     if (atmRef.current) {
       const pulse = 1 + Math.sin(clock.elapsedTime * 0.5) * 0.01;
@@ -613,10 +826,34 @@ export default function Globe() {
     if (matRef.current) {
       matRef.current.emissiveIntensity = isDaytime ? 0.28 : 0.06;
     }
+
+    /* Publish the camera-relative zoom for the pins + label chip, and — while
+       focused — the pin's world position so CameraSystem can ray-aim at it. */
+    if (groupRef.current) {
+      const gp = groupRef.current.position;
+      const dist = Math.hypot(
+        camera.position.x - gp.x,
+        camera.position.y - gp.y,
+        camera.position.z - gp.z
+      );
+      pinZoom.value = THREE.MathUtils.clamp((dist - 4.65) / (15 - 4.65), 0.22, 1);
+
+      if (focused && rot) {
+        globeFocus.cx = gp.x;
+        globeFocus.cy = gp.y;
+        globeFocus.cz = gp.z;
+        globeFocus.dist = camTarget.current.z + 3.5;
+        rot.updateWorldMatrix(true, false);
+        pinWorld.current.copy(pinPosition);
+        rot.localToWorld(pinWorld.current);
+        globeFocus.pinX = pinWorld.current.x;
+        globeFocus.pinY = pinWorld.current.y;
+        globeFocus.pinZ = pinWorld.current.z;
+      }
+    }
     if (labelRef.current) {
       /* The name chip shrinks with the pin as the camera zooms in. */
-      const target = THREE.MathUtils.clamp((camera.position.z - 1.6) / 8.9, 0.22, 1);
-      labelScale.current += (target - labelScale.current) * Math.min(1, delta * 4);
+      labelScale.current += (pinZoom.value - labelScale.current) * Math.min(1, delta * 4);
       const s = labelScale.current;
       labelRef.current.scale.set(1.1 * s, 0.275 * s, 1);
     }
@@ -646,8 +883,13 @@ export default function Globe() {
         onPointerDown={(e) => {
           e.stopPropagation();
           pointerDown.current = true;
-          dragState.current = { x: e.clientX, rotY: rotateRef.current.rotation.y, moved: 0 };
-          setDragging(true);
+          dragState.current = {
+            x: e.clientX,
+            y: e.clientY,
+            rotY: rotateRef.current.rotation.y,
+            rotX: rotateRef.current.rotation.x,
+            moved: 0,
+          };
           setFocused(false);
           globeFocus.active = false;
         }}
@@ -663,13 +905,13 @@ export default function Globe() {
         <sphereGeometry args={[1.5, 128, 128]} />
         <meshPhongMaterial
           ref={matRef}
-          map={atmosMap}
-          specularMap={specularMap}
+          map={albedoMap}
+          specularMap={hiRes?.specular || specularMap}
           specular={new THREE.Color('#777777')}
           shininess={10}
-          normalMap={normalMap}
+          normalMap={hiRes?.normal || normalMap}
           normalScale={new THREE.Vector2(1, 1)}
-          bumpMap={normalMap}
+          bumpMap={hiRes?.normal || normalMap}
           bumpScale={0.025}
           emissive={new THREE.Color('#16263a')}
           emissiveIntensity={0.28}
@@ -686,7 +928,14 @@ export default function Globe() {
             onPinDown={() => {
               pinHitRef.current = true;
             }}
-            onFly={() => setLocation({ name: d.name, lat: d.lat, lon: d.lon })}
+            onFly={() => {
+              /* A drag that merely ends over a pin must not fly anywhere,
+                 and rapid double-selection is throttled like map clicks. */
+              const now = performance.now();
+              if (dragState.current.moved >= 8 || now - lastClickAt.current < 500) return;
+              lastClickAt.current = now;
+              setLocation({ name: d.name, lat: d.lat, lon: d.lon });
+            }}
           />
         ))}
 
@@ -707,7 +956,7 @@ export default function Globe() {
         <meshBasicMaterial
           map={cloudTexture}
           transparent
-          opacity={0.32}
+          opacity={cloudOpacity}
           depthWrite={false}
         />
       </mesh>

@@ -33,12 +33,23 @@ function CameraSystem() {
 
     const k = reduced ? 1 : Math.min(1, delta);
 
-    /* While a location is focused, the globe owns the camera (zoom + yaw).
-       Aim straight at the pin so the clicked spot sits dead-centre. */
+    /* While a location is focused, the globe owns the camera distance and
+       we ray-aim at the pin's actual world position — the camera sits on the
+       centre→pin line at the focus distance, so the clicked spot is always
+       dead-centre, even while the globe is still tumbling. */
     if (globeFocus.active) {
-      camera.position.x += (0 - camera.position.x) * k * 0.5;
-      camera.position.y += (globeFocus.pinY - camera.position.y) * k * 0.5;
-      camera.lookAt(0, globeFocus.pinY, -3.5);
+      const d = globeFocus.dist;
+      const dx = globeFocus.pinX - globeFocus.cx;
+      const dy = globeFocus.pinY - globeFocus.cy;
+      const dz = globeFocus.pinZ - globeFocus.cz;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      const tx = globeFocus.cx + (dx / len) * d;
+      const ty = globeFocus.cy + (dy / len) * d;
+      const tz = globeFocus.cz + (dz / len) * d;
+      camera.position.x += (tx - camera.position.x) * k * 0.5;
+      camera.position.y += (ty - camera.position.y) * k * 0.5;
+      camera.position.z += (tz - camera.position.z) * k * 0.5;
+      camera.lookAt(globeFocus.pinX, globeFocus.pinY, globeFocus.pinZ);
       return;
     }
 
@@ -63,7 +74,9 @@ function CameraSystem() {
 function Lighting() {
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
+  const earthTheme = useWeatherStore((s) => s.earthTheme);
   const sunRef = useRef();
+  const isNightTheme = earthTheme === 'night';
 
   const config = useMemo(() => {
     const night = !isDaytime || weatherType === 'night';
@@ -71,12 +84,12 @@ function Lighting() {
     const overcast = weatherType === 'cloudy' || weatherType === 'rain';
 
     return {
-      ambient: night ? 0.08 : storm ? 0.1 : overcast ? 0.2 : 0.35,
-      hemiIntensity: night ? 0.15 : overcast ? 0.45 : 0.7,
-      hemiSky: night ? '#0a0a2a' : storm ? '#1a1a2a' : overcast ? '#4a5a6a' : '#87ceeb',
-      hemiGround: night ? '#0a0a0a' : storm ? '#0a0a10' : '#362d24',
+      ambient: isNightTheme ? 0.1 : night ? 0.08 : storm ? 0.1 : overcast ? 0.2 : 0.35,
+      hemiIntensity: isNightTheme ? 0.18 : night ? 0.15 : overcast ? 0.45 : 0.7,
+      hemiSky: isNightTheme ? '#0a0a2a' : night ? '#0a0a2a' : storm ? '#1a1a2a' : overcast ? '#4a5a6a' : '#87ceeb',
+      hemiGround: isNightTheme ? '#0a0a0a' : night ? '#0a0a0a' : storm ? '#0a0a10' : '#362d24',
     };
-  }, [weatherType, isDaytime]);
+  }, [weatherType, isDaytime, isNightTheme]);
 
   /* Orbit the sun light around the globe so it always strikes the true
      day side — the lit half matches the terminator and the real time of day. */
@@ -99,11 +112,11 @@ function Lighting() {
       <directionalLight
         ref={sunRef}
         position={[10, 20, 5]}
-        intensity={isDaytime ? 1.7 : 0.12}
+        intensity={isNightTheme ? 0.25 : isDaytime ? 1.7 : 0.12}
         color={isDaytime ? '#ffe8c8' : '#4466aa'}
       />
-      <pointLight position={[-5, 10, -10]} intensity={isDaytime ? 0.35 : 0.06} color="#6688cc" />
-      <pointLight position={[0, 2, 12]} intensity={isDaytime ? 0.4 : 0.05} color="#cfe0ff" />
+      <pointLight position={[-5, 10, -10]} intensity={isNightTheme ? 0.1 : isDaytime ? 0.35 : 0.06} color="#6688cc" />
+      <pointLight position={[0, 2, 12]} intensity={isNightTheme ? 0.12 : isDaytime ? 0.4 : 0.05} color="#cfe0ff" />
     </>
   );
 }
@@ -158,10 +171,11 @@ function skyBackground(weatherType, isDaytime) {
 export default function WeatherScene() {
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
+  const earthTheme = useWeatherStore((s) => s.earthTheme);
 
   const bg = useMemo(
-    () => skyBackground(weatherType, isDaytime),
-    [weatherType, isDaytime]
+    () => skyBackground(earthTheme === 'night' ? 'night' : weatherType, earthTheme === 'night' ? false : isDaytime),
+    [weatherType, isDaytime, earthTheme]
   );
 
   /* If the GPU context is lost and can't restore itself, remount the

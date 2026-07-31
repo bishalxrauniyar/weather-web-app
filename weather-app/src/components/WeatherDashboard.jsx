@@ -17,6 +17,7 @@ import MetricGrid from './ui/MetricGrid';
 import WeatherBrief from './ui/WeatherBrief';
 import WeatherDetail from './ui/WeatherDetail';
 import TravelBoard from './ui/TravelBoard';
+import EarthThemePicker from './ui/EarthThemePicker';
 import Icon from './ui/icons';
 
 function AnimatedTemp({ temp, unit }) {
@@ -187,6 +188,7 @@ export default function WeatherDashboard() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
               </button>
+              <EarthThemePicker />
               <div
                 className="flex items-center rounded-full border border-white/10 p-0.5 text-[11px] tabular-nums"
                 role="group"
