@@ -165,46 +165,48 @@ export default function WeatherDashboard() {
           <SearchBar />
         </div>
 
-        <div className="top-actions">
-          <button
-            className="icon-btn"
-            aria-label="Use my location"
-            title="Use my location"
-            onClick={() => refetchGeo()}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21s-6-5.2-6-10a6 6 0 1112 0c0 4.8-6 10-6 10z" />
-              <circle cx="12" cy="11" r="2.2" />
-            </svg>
-          </button>
-          <button
-            className="icon-btn"
-            aria-label="Refresh"
-            onClick={() => refetchWeather()}
-            title="Refresh"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </button>
-          <div
-            className="flex items-center rounded-full border border-white/15 p-0.5 text-[11px]"
-            role="group"
-            aria-label="Temperature units"
-          >
-            {['metric', 'imperial'].map((u) => (
+          <div className="top-actions flex items-center gap-1.5">
               <button
-                key={u}
-                onClick={() => setUnits(u)}
-                className={`px-2.5 py-1 rounded-full transition-colors ${
-                  units === u ? 'bg-white/15 text-white' : 'text-white/40 hover:text-white/70'
-                }`}
+                className="icon-btn"
+                aria-label="Use my location"
+                title="Use my location"
+                onClick={() => refetchGeo()}
               >
-                {u === 'metric' ? '°C' : '°F'}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21s-6-5.2-6-10a6 6 0 1112 0c0 4.8-6 10-6 10z" />
+                  <circle cx="12" cy="11" r="2.2" />
+                </svg>
               </button>
-            ))}
-          </div>
-        </div>
+              <button
+                className="icon-btn"
+                aria-label="Refresh"
+                onClick={() => refetchWeather()}
+                title="Refresh"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+              <div
+                className="flex items-center rounded-full border border-white/10 p-0.5 text-[11px] tabular-nums"
+                role="group"
+                aria-label="Temperature units"
+              >
+                {['metric', 'imperial'].map((u) => (
+                  <button
+                    key={u}
+                    onClick={() => setUnits(u)}
+                    className={`px-3 py-1 rounded-full transition-all duration-200 ${
+                      units === u
+                        ? 'bg-white/15 text-white shadow-sm'
+                        : 'text-white/30 hover:text-white/60'
+                    }`}
+                  >
+                    {u === 'metric' ? '°C' : '°F'}
+                  </button>
+                ))}
+              </div>
+            </div>
       </header>
 
       {/* Content Rail */}

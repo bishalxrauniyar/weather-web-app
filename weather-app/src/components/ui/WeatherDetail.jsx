@@ -269,25 +269,29 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
               </div>
 
               {/* Stats grid */}
-              <div className="px-8 grid grid-cols-2 gap-3.5">
+              <div className="px-8 grid grid-cols-2 gap-4">
                 {data.stats.map((stat, i) => (
                   <motion.div
                     key={stat.label}
-                    initial={{ opacity: 0, y: 12 }}
+                    initial={{ opacity: 0, y: 14 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.08 + i * 0.06, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                    className="relative overflow-hidden rounded-2xl px-5 py-4 border"
+                    transition={{ delay: 0.08 + i * 0.055, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                    whileHover={{ y: -2 }}
+                    className="relative overflow-hidden rounded-2xl px-5 py-4 border transition-colors duration-200 group"
                     style={{
                       background: 'var(--panel-soft)',
                       borderColor: 'var(--line)',
                     }}
                   >
-                    <span
-                      className="absolute left-0 top-0 bottom-0 w-[2.5px] opacity-60"
-                      style={{ background: 'var(--accent)' }}
-                    />
-                    <p className="label-text mb-1.5">{stat.label}</p>
-                    <p className="value-text text-[22px] font-[var(--font-display)] font-semibold leading-tight">
+                    <span className="absolute left-0 top-0 bottom-0 w-[3px] opacity-50 group-hover:opacity-100 transition-opacity duration-200"
+                      style={{ background: 'var(--accent)' }} />
+                    <div className="flex items-center gap-2.5 mb-2.5">
+                      <span className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-white/50 group-hover:text-accent transition-colors duration-200">
+                        <MetricIcon name={data.icon} size={15} />
+                      </span>
+                      <span className="label-text">{stat.label}</span>
+                    </div>
+                    <p className="value-text text-[22px] font-[var(--font-display)] font-bold leading-tight tracking-tight">
                       {stat.value}
                     </p>
                   </motion.div>
