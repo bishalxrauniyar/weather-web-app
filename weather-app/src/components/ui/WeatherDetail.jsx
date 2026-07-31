@@ -92,7 +92,7 @@ function buildDetail(type, weather, forecastList, uvIndex) {
         headline: `${humidity}% · ${comfort}`,
         icon: 'drop',
         stats: [
-          { label: 'Humidity', value: `${humidity}%` },
+          { label: 'Humidity', value: `${humidity}%`, pct: Math.min(humidity / 100, 1) },
           { label: 'Dew point', value: dew != null ? `${Math.round(dew)}°` : '—' },
           { label: 'Feels like', value: `${Math.round(feels)}°` },
           { label: 'Comfort', value: comfort },
@@ -111,7 +111,7 @@ function buildDetail(type, weather, forecastList, uvIndex) {
         headline: `UV ${uv} · ${uvLevel}`,
         icon: 'uv',
         stats: [
-          { label: 'Index', value: uv },
+          { label: 'Index', value: uv, pct: Math.min(uv / 11, 1), barColor: uv > 7 ? '#ff5e5e' : uv > 5 ? '#ffb25e' : '#ffd25e' },
           { label: 'Risk level', value: uvLevel },
           { label: 'Unprotected burn', value: getUVBurnTime(uv) },
           { label: 'Protection', value: protection },
@@ -142,7 +142,7 @@ function buildDetail(type, weather, forecastList, uvIndex) {
           { label: 'Current', value: `${pressure} hPa` },
           { label: 'Trend', value: trend.label },
           { label: 'Δ 9h', value: `${trend.delta >= 0 ? '+' : ''}${trend.delta.toFixed(1)} hPa` },
-          { label: 'Cloud cover', value: `${cloudPct}%` },
+          { label: 'Cloud cover', value: `${cloudPct}%`, pct: Math.min(cloudPct / 100, 1) },
         ],
         advice: story,
       };
@@ -154,7 +154,7 @@ function buildDetail(type, weather, forecastList, uvIndex) {
         headline: `${visibilityKm.toFixed(1)} km · ${cond}`,
         icon: 'eye',
         stats: [
-          { label: 'Distance', value: `${visibilityKm.toFixed(1)} km` },
+          { label: 'Distance', value: `${visibilityKm.toFixed(1)} km`, pct: Math.min(visibilityKm / 10, 1) },
           { label: 'Condition', value: cond },
           { label: 'Driving', value: visibilityKm >= 10 ? 'Full visibility' : visibilityKm >= 5 ? 'Easy going' : 'Take it slow' },
           { label: 'Fog risk', value: visibilityKm < 2 ? 'High' : visibilityKm < 5 ? 'Possible' : 'Low' },
@@ -172,8 +172,71 @@ function buildDetail(type, weather, forecastList, uvIndex) {
   }
 }
 
+function buildSparkline(forecastList) {
+  if (!forecastList?.length) return null;
+  return forecastList.slice(0, 24).map((h) => h?.main?.temp).filter((t) => t != null);
+}
+
+function Sparkline({ temps }) {
+  if (!temps || temps.length < 2) return null;
+  const w = 300;
+  const h = 64;
+  const min = Math.min(...temps);
+  const max = Math.max(...temps);
+  const range = Math.max(1, max - min);
+  const pts = temps.map((t, i) => {
+    const x = (i / (temps.length - 1)) * w;
+    const y = h - 6 - ((t - min) / range) * (h - 14);
+    return [x, y];
+  });
+  const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const area = `0,${h} ${line} ${w},${h}`;
+
+  return (
+    <div className="relative mt-6">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.13em] text-white/40">
+          Next 24 hours
+        </span>
+        <div className="flex items-center gap-3 text-[11px]">
+          <span className="text-[#5ee0ff]">{Math.round(max)}° high</span>
+          <span className="text-white/40">{Math.round(min)}° low</span>
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-16" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+          <linearGradient id="spark-line" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="var(--accent)" />
+            <stop offset="100%" stopColor="#5ee0ff" />
+          </linearGradient>
+        </defs>
+        <polygon points={area} fill="url(#spark-fill)" />
+        <polyline
+          points={line}
+          fill="none"
+          stroke="url(#spark-line)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <circle
+          cx={pts[pts.length - 1][0]}
+          cy={pts[pts.length - 1][1]}
+          r="3.5"
+          fill="#5ee0ff"
+        />
+      </svg>
+    </div>
+  );
+}
+
 export default function WeatherDetail({ isOpen, onClose, type, weather, forecast }) {
   const uvIndex = useWeatherStore((s) => s.uvIndex);
+  const location = useWeatherStore((s) => s.location);
 
   useEffect(() => {
     const handleEsc = (e) => {
@@ -209,7 +272,7 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-6 pointer-events-none"
           >
-            <div className="detail-panel pointer-events-auto w-full max-w-lg">
+            <div className="detail-panel pointer-events-auto w-full max-w-xl">
               {/* Accent edge */}
               <div
                 className="h-[3px]"
@@ -228,7 +291,9 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                 />
                 <div className="relative flex items-start justify-between gap-4">
                   <div className="flex items-center gap-4.5">
-                    <span
+                    <motion.span
+                      animate={{ y: [0, -3, 0], rotate: [0, -3, 0] }}
+                      transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
                       className="w-14 h-14 rounded-2xl flex items-center justify-center"
                       style={{
                         background: 'linear-gradient(145deg, var(--accent-soft), rgba(255,255,255,0.04))',
@@ -238,7 +303,7 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                       }}
                     >
                       <MetricIcon name={data.icon} size={26} />
-                    </span>
+                    </motion.span>
                     <div>
                       <h2 className="text-[26px] font-semibold leading-tight tracking-tight">
                         {data.headline}
@@ -253,6 +318,12 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                       >
                         <MetricIcon name={data.icon} size={11} />
                         {type.replace(/_/g, ' ').toLowerCase()}
+                      </span>
+                      <span className="block mt-2 text-xs text-white/45">
+                        {location?.name}
+                        {weather?.weather?.[0]?.description
+                          ? ` · ${weather.weather[0].description}`
+                          : ''}
                       </span>
                     </div>
                   </div>
@@ -294,9 +365,30 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                     <p className="value-text text-[22px] font-[var(--font-display)] font-bold leading-tight tracking-tight">
                       {stat.value}
                     </p>
+                    {stat.pct != null && (
+                      <div className="mt-2.5 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.round(stat.pct * 100)}%` }}
+                          transition={{ delay: 0.18 + i * 0.055, duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+                          className="h-full rounded-full"
+                          style={{
+                            background:
+                              stat.barColor ||
+                              'linear-gradient(90deg, var(--accent), #5ee0ff)',
+                          }}
+                        />
+                      </div>
+                    )}
                   </motion.div>
                 ))}
               </div>
+
+              {type === 'TEMPERATURE' && (
+                <div className="px-8">
+                  <Sparkline temps={buildSparkline(forecast?.list)} />
+                </div>
+              )}
 
               {/* Practical advice */}
               <div className="px-8 pt-4 pb-8">
@@ -316,9 +408,20 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                   </p>
                   <p className="text-sm text-white/75 leading-relaxed">{data.advice}</p>
                 </div>
-                <p className="text-center text-xs text-white/30 mt-5">
-                  Press ESC or click outside to close
-                </p>
+                <div className="flex items-center justify-between mt-5">
+                  <p className="text-xs text-white/30">Press ESC or click outside to close</p>
+                  <button
+                    onClick={onClose}
+                    className="text-xs font-semibold px-4 py-2 rounded-full transition-colors"
+                    style={{
+                      color: 'var(--accent)',
+                      background: 'var(--accent-soft)',
+                      border: '1px solid var(--line)',
+                    }}
+                  >
+                    Done
+                  </button>
+                </div>
               </div>
             </div>
           </motion.div>

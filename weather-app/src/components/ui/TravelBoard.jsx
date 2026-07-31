@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
+import { useState } from 'react';
 import { useWeatherStore } from '../../store/weatherStore';
 import { useWeatherByCoords } from '../../hooks/useWeather';
 import { toUnit, unitSymbol } from '../../storage/weatherUtils';
@@ -15,26 +16,30 @@ function DestinationRow({ dest, onFly, onRemove }) {
       initial={{ opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -6 }}
-      className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl"
+      className="flex items-center justify-between gap-3 px-4 py-3 rounded-2xl cursor-pointer group transition-colors"
+      onClick={onFly}
       style={{ background: 'var(--panel-soft)', border: '1px solid var(--line)' }}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === 'Enter' && onFly()}
+      title={`Fly to ${dest.name}`}
     >
-      <button
-        onClick={onFly}
-        className="flex items-center gap-3 min-w-0 text-left group"
-        title={`Fly to ${dest.name}`}
-      >
+      <div className="flex items-center gap-3 min-w-0 text-left">
         <span className="w-2 h-2 rounded-full bg-[#39d9ff] shrink-0" />
         <span className="min-w-0">
           <span className="block text-sm text-white truncate">{dest.name}</span>
           <span className="block text-[11px] text-white/40 truncate">{cond}</span>
         </span>
-      </button>
+      </div>
       <div className="flex items-center gap-3 shrink-0">
         <span className="text-base text-white font-medium">
           {isLoading ? '—' : temp != null ? `${temp}${unitSymbol(units)}` : '—'}
         </span>
         <button
-          onClick={onRemove}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
           aria-label={`Remove ${dest.name}`}
           className="text-white/25 hover:text-red-400 transition-colors"
         >
@@ -58,11 +63,24 @@ export default function TravelBoard() {
     setLocation,
   } = useWeatherStore();
 
+  const [justPinned, setJustPinned] = useState(false);
+
   const canPin =
     location?.lat != null &&
     !travelDestinations.some(
       (d) => Math.abs(d.lat - location.lat) < 0.1 && Math.abs(d.lon - location.lon) < 0.1
     );
+
+  const handlePin = () => {
+    if (!canPin) return;
+    addTravelDestination({
+      name: location.name,
+      lat: location.lat,
+      lon: location.lon,
+    });
+    setJustPinned(true);
+    setTimeout(() => setJustPinned(false), 1400);
+  };
 
   return (
     <section className="relative">
@@ -81,22 +99,17 @@ export default function TravelBoard() {
         {travelMode && (
           <div className="flex items-center gap-2">
             <button
-              onClick={() =>
-                canPin &&
-                addTravelDestination({
-                  name: location.name,
-                  lat: location.lat,
-                  lon: location.lon,
-                })
-              }
+              onClick={handlePin}
               disabled={!canPin}
               className={`text-[11px] px-3 py-1.5 rounded-full border transition-colors ${
-                canPin
-                  ? 'text-white/70 border-white/15 hover:text-white hover:border-white/35'
-                  : 'text-white/20 border-white/5 cursor-not-allowed'
+                justPinned
+                  ? 'text-[#39d9ff] border-[#39d9ff]/50'
+                  : canPin
+                    ? 'text-white/70 border-white/15 hover:text-white hover:border-white/35'
+                    : 'text-white/20 border-white/5 cursor-not-allowed'
               }`}
             >
-              + Pin this place
+              {justPinned ? '✓ Pinned' : '+ Pin this place'}
             </button>
             {travelDestinations.length > 0 && (
               <button

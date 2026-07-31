@@ -100,7 +100,9 @@ function wrapAngle(a) {
 function PinMarker({ position }) {
   const ringRef = useRef();
   const glowRef = useRef();
+  const scaleRef = useRef();
   const burstRef = useRef(0);
+  const zoomScale = useRef(1);
 
   const quat = useMemo(
     () => new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), position.clone().normalize()),
@@ -111,8 +113,15 @@ function PinMarker({ position }) {
     burstRef.current = 1;
   }, [position]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock, camera }, delta) => {
     const t = clock.elapsedTime;
+
+    /* The pin shrinks as the camera zooms into the surface — at full zoom
+       it is a small precise marker instead of covering the whole city. */
+    const target = THREE.MathUtils.clamp((camera.position.z - 1.6) / 8.9, 0.22, 1);
+    zoomScale.current += (target - zoomScale.current) * Math.min(1, delta * 4);
+    if (scaleRef.current) scaleRef.current.scale.setScalar(zoomScale.current);
+
     if (ringRef.current) {
       const s = 1 + Math.sin(t * 2.2) * 0.35;
       ringRef.current.scale.setScalar(s);
@@ -131,17 +140,74 @@ function PinMarker({ position }) {
 
   return (
     <group position={position} quaternion={quat}>
-      <mesh ref={glowRef} position={[0, 0, 0.02]}>
-        <sphereGeometry args={[0.09, 12, 12]} />
-        <meshBasicMaterial color="#ff5577" transparent opacity={0.15} depthWrite={false} />
-      </mesh>
-      <mesh>
-        <sphereGeometry args={[0.04, 12, 12]} />
-        <meshBasicMaterial color="#ffffff" />
-      </mesh>
-      <mesh position={[0, 0, 0.005]} rotation={[0, 0, 0]}>
-        <ringGeometry args={[0.07, 0.095, 32]} />
-        <meshBasicMaterial color="#ff5577" transparent opacity={0.5} side={THREE.DoubleSide} depthWrite={false} />
+      <group ref={scaleRef}>
+        <mesh ref={glowRef} position={[0, 0, 0.02]}>
+          <sphereGeometry args={[0.09, 12, 12]} />
+          <meshBasicMaterial color="#ff5577" transparent opacity={0.15} depthWrite={false} />
+        </mesh>
+        <mesh>
+          <sphereGeometry args={[0.04, 12, 12]} />
+          <meshBasicMaterial color="#ffffff" />
+        </mesh>
+        <mesh position={[0, 0, 0.005]} rotation={[0, 0, 0]}>
+          <ringGeometry args={[0.07, 0.095, 32]} />
+          <meshBasicMaterial color="#ff5577" transparent opacity={0.5} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function TravelPin({ position, onPinDown, onFly }) {
+  const ringRef = useRef();
+  const visualRef = useRef();
+  const zoomScale = useRef(1);
+
+  useFrame(({ clock, camera }, delta) => {
+    const t = clock.elapsedTime;
+
+    /* Same zoom-shrink as the main pin, so pins stay proportional while
+       flying in — but the invisible hit area stays full size for clicks. */
+    const target = THREE.MathUtils.clamp((camera.position.z - 1.6) / 8.9, 0.22, 1);
+    zoomScale.current += (target - zoomScale.current) * Math.min(1, delta * 4);
+    if (visualRef.current) visualRef.current.scale.setScalar(zoomScale.current);
+
+    if (ringRef.current) {
+      const s = 1 + Math.sin(t * 2.5) * 0.22;
+      ringRef.current.scale.setScalar(s);
+      ringRef.current.material.opacity = 0.32 - Math.sin(t * 2.5) * 0.12;
+    }
+  });
+
+  return (
+    <group position={position}>
+      <group ref={visualRef}>
+        {/* Pulse halo */}
+        <mesh ref={ringRef} position={[0, 0, 0.02]}>
+          <sphereGeometry args={[0.08, 16, 16]} />
+          <meshBasicMaterial color="#39d9ff" transparent opacity={0.3} depthWrite={false} />
+        </mesh>
+        {/* Visible pin */}
+        <mesh>
+          <sphereGeometry args={[0.045, 16, 16]} />
+          <meshBasicMaterial color="#39d9ff" />
+        </mesh>
+      </group>
+      {/* Big invisible hit area — easy to click, stops the globe click handler */}
+      <mesh
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onPinDown();
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onFly();
+        }}
+        onPointerOver={() => (document.body.style.cursor = 'pointer')}
+        onPointerOut={() => (document.body.style.cursor = '')}
+      >
+        <sphereGeometry args={[0.16, 16, 16]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
     </group>
   );
@@ -186,6 +252,8 @@ export default function Globe() {
   const atmRef = useRef();
   const matRef = useRef();
   const lightsRef = useRef();
+  const labelRef = useRef();
+  const labelScale = useRef(1);
   const loc = useWeatherStore((s) => s.location);
   const setLocation = useWeatherStore((s) => s.setLocation);
   const weatherType = useWeatherStore((s) => s.weatherType);
@@ -440,6 +508,7 @@ export default function Globe() {
      Attached once (not gated on `dragging`) so fast clicks never race the
      state re-render and get lost. */
   const pointerDown = useRef(false);
+  const pinHitRef = useRef(false);
   useEffect(() => {
     const onMove = (e) => {
       if (!pointerDown.current) return;
@@ -455,7 +524,9 @@ export default function Globe() {
       if (!pointerDown.current) return;
       pointerDown.current = false;
       setDragging(false);
-      if (dragState.current.moved < 6) selectFromClick(e);
+      const pinHit = pinHitRef.current;
+      pinHitRef.current = false;
+      if (!pinHit && dragState.current.moved < 6) selectFromClick(e);
     };
 
     window.addEventListener('pointermove', onMove);
@@ -491,7 +562,7 @@ export default function Globe() {
     [travelDestinations]
   );
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock, camera }, delta) => {
     const manual = dragging || hovering.current;
     const zoom = reducedMotion ? 1 : Math.min(1, delta * 3);
 
@@ -516,7 +587,9 @@ export default function Globe() {
       cloudsRef.current.rotation.y += delta * 0.07;
     }
     if (lightsRef.current) {
-      lightsRef.current.rotation.y += delta * 0.045;
+      /* The lights overlay must stay glued to the surface — it has its own
+         material matrix but we keep its rotation locked to the earth's. */
+      lightsRef.current.rotation.y = rotateRef.current?.rotation.y ?? 0;
     }
     if (lightsMaterial) {
       const rot = rotateRef.current?.rotation.y ?? 0;
@@ -539,6 +612,13 @@ export default function Globe() {
     }
     if (matRef.current) {
       matRef.current.emissiveIntensity = isDaytime ? 0.28 : 0.06;
+    }
+    if (labelRef.current) {
+      /* The name chip shrinks with the pin as the camera zooms in. */
+      const target = THREE.MathUtils.clamp((camera.position.z - 1.6) / 8.9, 0.22, 1);
+      labelScale.current += (target - labelScale.current) * Math.min(1, delta * 4);
+      const s = labelScale.current;
+      labelRef.current.scale.set(1.1 * s, 0.275 * s, 1);
     }
     if (groupRef.current) {
       groupRef.current.position.y = -2 + Math.sin(clock.elapsedTime * 0.15) * 0.08;
@@ -594,6 +674,26 @@ export default function Globe() {
           emissive={new THREE.Color('#16263a')}
           emissiveIntensity={0.28}
         />
+
+        {/* Pins & labels live INSIDE the rotating earth so they stay glued
+            to the surface while the globe drifts. */}
+        <PinMarker position={pinPosition} />
+
+        {travelPins.map((d) => (
+          <TravelPin
+            key={`${d.lat.toFixed(3)},${d.lon.toFixed(3)}`}
+            position={d.pos}
+            onPinDown={() => {
+              pinHitRef.current = true;
+            }}
+            onFly={() => setLocation({ name: d.name, lat: d.lat, lon: d.lon })}
+          />
+        ))}
+
+        {/* Floating location name chip */}
+        <sprite ref={labelRef} position={pinPosition.clone().multiplyScalar(1.2)} scale={[1.1, 0.275, 1]}>
+          <spriteMaterial map={labelTexture} transparent depthWrite={false} />
+        </sprite>
       </mesh>
 
       {/* Night side: city lights overlay — shader masks to the dark side only */}
@@ -611,31 +711,6 @@ export default function Globe() {
           depthWrite={false}
         />
       </mesh>
-
-      {/* Location pin + pulse ring */}
-      <PinMarker position={pinPosition} />
-
-      {/* Travel destination pins — click to fly there */}
-      {travelPins.map((d) => (
-        <mesh
-          key={`${d.lat.toFixed(3)},${d.lon.toFixed(3)}`}
-          position={d.pos}
-          onClick={(e) => {
-            e.stopPropagation();
-            setLocation({ name: d.name, lat: d.lat, lon: d.lon });
-          }}
-          onPointerOver={() => (document.body.style.cursor = 'pointer')}
-          onPointerOut={() => (document.body.style.cursor = '')}
-        >
-          <sphereGeometry args={[0.055, 12, 12]} />
-          <meshBasicMaterial color="#39d9ff" />
-        </mesh>
-      ))}
-
-      {/* Floating location name chip */}
-      <sprite position={pinPosition.clone().multiplyScalar(1.2)} scale={[1.1, 0.275, 1]}>
-        <spriteMaterial map={labelTexture} transparent depthWrite={false} />
-      </sprite>
     </group>
   );
 }
