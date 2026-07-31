@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#05070d" />
+    <title>Offline — WeatherVerse</title>
+    <style>
+      html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, sans-serif;
+        background: #05070d; color: #f2f6fb; }
+      body { display: flex; align-items: center; justify-content: center; }
+      .card { text-align: center; padding: 32px; }
+      .globe { font-size: 56px; margin-bottom: 16px; }
+      h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
+      p { color: rgba(242,246,251,0.55); font-size: 14px; margin: 0 0 24px; }
+      button { background: rgba(255,255,255,0.1); border: none; color: #fff; font-size: 14px;
+        padding: 10px 22px; border-radius: 999px; cursor: pointer; }
+      button:hover { background: rgba(255,255,255,0.2); }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="globe">🌍</div>
+      <h1>You're offline</h1>
+      <p>WeatherVerse needs a connection for live conditions.<br />Reconnect and try again.</p>
+      <button onclick="window.location.reload()">Retry</button>
+    </div>
+  </body>
+</html>

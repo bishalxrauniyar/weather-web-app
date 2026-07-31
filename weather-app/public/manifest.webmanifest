@@ -1,0 +1,18 @@
+{
+  "name": "WeatherVerse — Living Weather",
+  "short_name": "WeatherVerse",
+  "description": "Immersive 3D weather experience with AI-powered insights",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a2a5a",
+  "theme_color": "#0a2a5a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
