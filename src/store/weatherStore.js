@@ -24,8 +24,8 @@ const getWeatherSeverity = (code) => {
    fallback whenever the location changes, so day/night stays correct even if
    the weather fetch for the new place is slow or rate-limited (setWeather
    overwrites it with the API's sunrise/sunset when that arrives). */
-const sunDaytime = (lat, lon) => {
-  const now = new Date();
+export const sunDaytime = (lat, lon, at = Date.now()) => {
+  const now = new Date(at);
   const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
   const decl = (23.44 * Math.sin(((2 * Math.PI) / 365) * (dayOfYear - 81)) * Math.PI) / 180;
   const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60;
@@ -36,6 +36,11 @@ const sunDaytime = (lat, lon) => {
   );
   return alt > -0.012; /* sun above ~-0.7° — matches the sunrise/sunset definition */
 };
+
+/* Favorites used to be plain city-name strings; normalise legacy entries so
+   the quick-access chips can fly to a place (they need coordinates). */
+const normalizeFavorites = (raw) =>
+  raw.map((f) => (typeof f === 'string' ? { name: f, lat: null, lon: null } : f));
 
 export const useWeatherStore = create((set, get) => ({
   weather: null,
@@ -49,12 +54,14 @@ export const useWeatherStore = create((set, get) => ({
   weatherType: 'clear',
   weatherSeverity: 'normal',
   isDaytime: true,
+  /* Time-travel: an epoch-ms the scene treats as "now" (null = live). */
+  simulatedAt: null,
   interacted: false,
   location: { name: 'London', lat: 51.5074, lon: -0.1278, country: '', state: '' },
   currentLocation: 'London',
   searchResults: [],
   recentSearches: JSON.parse(localStorage.getItem('recentSearches') || '[]'),
-  favorites: JSON.parse(localStorage.getItem('favoriteCities') || '[]'),
+  favorites: normalizeFavorites(JSON.parse(localStorage.getItem('favoriteCities') || '[]')),
   isLoading: false,
   isLoadingMore: false,
   error: null,
@@ -72,7 +79,7 @@ export const useWeatherStore = create((set, get) => ({
   },
   weatherLayers: {
     clouds: true,
-    precipitation: true,
+    precipitation: false,
     wind: false,
     temperature: false,
     pressure: false,
@@ -80,6 +87,8 @@ export const useWeatherStore = create((set, get) => ({
   travelMode: false,
   travelDestinations: [],
   earthTheme: 'satellite',
+  /* Mobile: collapse the details rail so the globe map fills the screen */
+  detailsCollapsed: false,
   communityReports: [],
   smartHomeSettings: {
     autoAdjust: false,
@@ -137,6 +146,21 @@ export const useWeatherStore = create((set, get) => ({
     });
   },
 
+  /* Deep links load a shared place WITHOUT marking the app as interacted, so
+     the globe opens in the full-earth view instead of diving to the city's
+     surface (which hides the map on mobile). */
+  applySharedLocation: (location) => {
+    const recent = get().recentSearches;
+    const updated = [location.name, ...recent.filter((n) => n !== location.name)].slice(0, 10);
+    localStorage.setItem('recentSearches', JSON.stringify(updated));
+    set({
+      location,
+      recentSearches: updated,
+      currentLocation: location.name,
+      isDaytime: sunDaytime(location.lat, location.lon),
+    });
+  },
+
   setTravelDestinations: (destinations) => {
     set({ travelDestinations: destinations });
   },
@@ -155,12 +179,18 @@ export const useWeatherStore = create((set, get) => ({
   },
 
   toggleFavorite: (city) => {
+    const entry = typeof city === 'string' ? { name: city, lat: null, lon: null } : city;
     const favorites = get().favorites;
-    const idx = favorites.indexOf(city);
-    const updated = idx >= 0 ? favorites.filter((c) => c !== city) : [...favorites, city];
+    const idx = favorites.findIndex((f) => f.name === entry.name);
+    const updated =
+      idx >= 0 ? favorites.filter((f) => f.name !== entry.name) : [...favorites, entry];
     localStorage.setItem('favoriteCities', JSON.stringify(updated));
     set({ favorites: updated });
   },
+
+  setDaytime: (isDaytime) => set({ isDaytime }),
+
+  setSimulatedAt: (simulatedAt) => set({ simulatedAt }),
 
   setSearchResults: (results) => set({ searchResults: results }),
 
@@ -191,6 +221,8 @@ export const useWeatherStore = create((set, get) => ({
   setTravelMode: (enabled) => set({ travelMode: enabled }),
 
   setEarthTheme: (theme) => set({ earthTheme: theme }),
+
+  setDetailsCollapsed: (collapsed) => set({ detailsCollapsed: collapsed }),
 
   setAIInsights: (insights) => set({ aiInsights: insights }),
 

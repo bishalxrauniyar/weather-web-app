@@ -126,16 +126,24 @@ export default function SearchBar() {
             id="search-results"
           >
             {suggestions.map((item, i) => (
-              <motion.button
+              <motion.div
                 key={i}
                 id={`sr-${i}`}
+                role="button"
+                tabIndex={0}
+                aria-disabled={!item.lat}
                 initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.025, duration: 0.15 }}
                 whileHover={{ backgroundColor: 'rgba(255,255,255,0.06)', x: 4 }}
-                onClick={() => item.lat ? handleSelect(item) : null}
-                className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm transition-colors rounded-xl ${activeIndex === i ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white'}`}
-                disabled={!item.lat}
+                onClick={() => item.lat && handleSelect(item)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && item.lat) {
+                    e.preventDefault();
+                    handleSelect(item);
+                  }
+                }}
+                className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm transition-colors rounded-xl cursor-pointer outline-none focus-visible:bg-white/10 ${activeIndex === i ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white'}`}
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <span className="w-7 h-7 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-white/30 shrink-0">
@@ -152,11 +160,11 @@ export default function SearchBar() {
                       role="button"
                       tabIndex={0}
                       aria-label="Toggle favorite"
-                      onClick={(e) => { e.stopPropagation(); toggleFavorite(item.name); }}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggleFavorite(item.name); } }}
-                      className={`transition-colors duration-200 ${favorites.includes(item.name) ? 'text-yellow-400' : 'text-white/15 hover:text-white/40'}`}
+                      onClick={(e) => { e.stopPropagation(); toggleFavorite(item); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); toggleFavorite(item); } }}
+                      className={`transition-colors duration-200 ${favorites.some((f) => f.name === item.name) ? 'text-yellow-400' : 'text-white/15 hover:text-white/40'}`}
                     >
-                      <svg className="w-3.5 h-3.5" fill={favorites.includes(item.name) ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-3.5 h-3.5" fill={favorites.some((f) => f.name === item.name) ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
                       </svg>
                     </button>
@@ -164,7 +172,7 @@ export default function SearchBar() {
                     <span className="text-white/15 text-[9px] uppercase tracking-widest font-semibold">Recent</span>
                   )}
                 </div>
-              </motion.button>
+              </motion.div>
             ))}
           </motion.div>
         )}

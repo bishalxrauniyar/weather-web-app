@@ -28,6 +28,17 @@ function CameraSystem() {
     []
   );
 
+  /* On mobile the weather rail is a bottom sheet, so the globe must sit in
+     the top band — aim the idle camera down toward the earth's centre.
+     When the rail is collapsed (map mode) the globe takes the whole screen
+     and the camera returns to the standard centred view. */
+  const narrow = useMemo(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches,
+    []
+  );
+  const collapsed = useWeatherStore((s) => s.detailsCollapsed);
+  const mapMode = narrow && collapsed;
+
   useFrame(({ clock }, delta) => {
     breath.current += delta * 0.2;
 
@@ -55,7 +66,9 @@ function CameraSystem() {
     }
 
     const tx = target.current.x * 1.8 + Math.sin(clock.elapsedTime * 0.01) * 0.2;
-    const ty = 2 + target.current.y * 0.6 + Math.sin(breath.current) * 0.03;
+    /* ty=3 + aim 0 puts the globe dead-centre (projected NDC y ≈ 0) in map
+       mode; ty=3.4 + aim -3.8 lifts it into the top band on mobile. */
+    const ty = (mapMode ? 3 : narrow ? 3.4 : 2) + target.current.y * 0.6 + Math.sin(breath.current) * 0.03;
     const tz = 10.5 + Math.sin(clock.elapsedTime * 0.008) * 0.15;
 
     camera.position.x += (tx - camera.position.x) * k * 0.5;
@@ -64,7 +77,7 @@ function CameraSystem() {
 
     camera.lookAt(
       target.current.x * 0.2,
-      Math.sin(clock.elapsedTime * 0.015) * 0.08,
+      (mapMode ? 0 : narrow ? -3.8 : 0) + Math.sin(clock.elapsedTime * 0.015) * 0.08,
       target.current.y * 0.1,
     );
   });

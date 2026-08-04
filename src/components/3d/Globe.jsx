@@ -3,6 +3,8 @@ import { useFrame, useLoader, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useWeatherStore } from '../../store/weatherStore';
 import { useInverseGeocode } from '../../hooks/useWeather';
+import { loadLiveClouds } from '../../lib/owmTiles';
+import MapLayer from './MapLayer';
 
 const cloudinessByType = {
   clear: 0.08,
@@ -34,6 +36,12 @@ export const sunBus = {
   dir: new THREE.Vector3(0.5, 0.6, 0.6),
   center: new THREE.Vector3(0, -1.3, -3.5),
 };
+
+/* Scroll-wheel zoom anchor: while the user wheels, the camera eases toward
+   this world position instead of the idle drift target, so the zoom stays
+   pointed at the place under the cursor (Google-Maps style). Reset on drag,
+   fly or map-mode toggle. */
+export const camAnchor = { active: false, x: 0, y: 0, z: 0 };
 
 /* Zoom-shrink factor for pins + labels — written each frame from the camera
    distance, read by PinMarker/TravelPin so they shrink while flying in.
@@ -121,37 +129,9 @@ function buildThemeTextures(srcImage) {
   return { map: mk(mapCanvas), night: mk(nightCanvas) };
 }
 
-/* Real-time global cloud cover from NASA GIBS (MODIS) — equirect 1024×512.
-   Falls back to the bundled cloud map when the network/NASA is unavailable. */
-let liveCloudPromise = null;
-function loadLiveClouds() {
-  if (!liveCloudPromise) {
-    const date = new Date().toISOString().slice(0, 10);
-    const url =
-      'https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms' +
-      `?REQUEST=GetMap&LAYERS=MODIS_Terra_Cloud_Fraction&DATE=${date}&CRS=EPSG:4326` +
-      '&BBOX=-180,-90,180,90&WIDTH=1024&HEIGHT=512&FORMAT=image/png&TRANSPARENT=FALSE';
-    liveCloudPromise = fetch(url)
-      .then((r) => {
-        if (!r.ok) throw new Error('GIBS failed');
-        return r.blob();
-      })
-      .then((blob) => {
-        const img = new Image();
-        img.src = URL.createObjectURL(blob);
-        return new Promise((resolve, reject) => {
-          img.onload = () => resolve(img);
-          img.onerror = reject;
-        });
-      })
-      .catch((e) => {
-        liveCloudPromise = null;
-        throw e;
-      });
-  }
-  return liveCloudPromise;
-}
-
+/* Real-time global cloud cover — OWM cloud tiles (CORS-enabled), fetched
+   in lib/owmTiles.js and re-projected to equirect. Falls back to the
+   bundled cloud map when the network/API is unavailable. */
 function makeCloudTexture(cloudsImage, weatherType, liveImage) {
   const cloudiness = cloudinessByType[weatherType] ?? 0.3;
   const src = liveImage || cloudsImage;
@@ -165,18 +145,11 @@ function makeCloudTexture(cloudsImage, weatherType, liveImage) {
   ctx.drawImage(src, 0, 0);
   ctx.globalAlpha = 1;
 
-  if (liveImage) {
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.fillStyle = `rgba(255,255,255,${0.55 + cloudiness * 0.45})`;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.globalCompositeOperation = 'source-over';
-  }
-
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
+  texture.anisotropy = 16;
   return texture;
 }
 
@@ -357,6 +330,7 @@ export default function Globe() {
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
   const earthTheme = useWeatherStore((s) => s.earthTheme);
+  const weatherLayers = useWeatherStore((s) => s.weatherLayers);
   const lat = loc?.lat ?? 51.5074;
   const lon = loc?.lon ?? -0.1278;
 
@@ -376,23 +350,39 @@ export default function Globe() {
   const [themeTextures, setThemeTextures] = useState(null);
   const dragState = useRef({ x: 0, rotY: 0, moved: 0 });
   const hovering = useRef(false);
+  const multiTouchRef = useRef(false);
   const targetRot = useRef(null);
   const camTarget = useRef({ z: 10.5, y: 0 });
   const lastClickAt = useRef(0);
   const clickedRef = useRef(false);
+  /* Where the user PRESSED (window coords) — the click is resolved against
+     this, not the pointerup spot, so a slow press that drifts a couple of
+     pixels still selects the place they intended. */
+  const downClient = useRef({ x: 0, y: 0 });
+  /* Last accepted surface selection (coords + time) — used to detect a true
+     double-click so we can suppress it without dropping fast different-spot
+     clicks (those are deliberate moves and must never fall through). */
+  const lastSel = useRef(null);
   const sunBase = useRef(new THREE.Vector3(0.5, 0.6, 0.6));
   const darkness = useRef(isDaytime ? 0 : 1);
 
-  /* Real-time global cloud cover (NASA MODIS cloud fraction) */
+  /* Real-time global cloud cover — OWM cloud tiles. Gated by the "Clouds"
+     map-layer toggle; when off, fall back to the bundled cloud map so the
+     globe never looks bare. */
+  const cloudsEnabled = weatherLayers.clouds;
   useEffect(() => {
     let cancelled = false;
+    if (!cloudsEnabled) {
+      setLiveClouds(null);
+      return undefined;
+    }
     loadLiveClouds()
       .then((img) => !cancelled && setLiveClouds(img))
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [cloudsEnabled]);
 
   /* 4096px earth maps on top of the bundled 2048s (silently falls back) */
   useEffect(() => {
@@ -419,11 +409,14 @@ export default function Globe() {
     };
   }, []);
 
-  /* Solar subpoint — drives the day/night terminator on the globe */
+  /* Solar subpoint — drives the day/night terminator on the globe.
+     With time-travel active (simulatedAt set) the terminator follows the
+     simulated clock instead of the real one. */
+  const simulatedAt = useWeatherStore((s) => s.simulatedAt);
   useEffect(() => {
     const compute = () => {
       if (loc?.lat == null || loc?.lon == null) return;
-      const now = new Date();
+      const now = new Date(simulatedAt ?? Date.now());
       const dayOfYear =
         Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
       const decl =
@@ -437,7 +430,7 @@ export default function Globe() {
     compute();
     const t = setInterval(compute, 60 * 1000);
     return () => clearInterval(t);
-  }, [loc?.lat, loc?.lon]);
+  }, [loc?.lat, loc?.lon, simulatedAt]);
 
   /* Keyboard: arrows rotate the globe, +/- zooms (ignored while typing) */
   useEffect(() => {
@@ -473,9 +466,9 @@ export default function Globe() {
         setFocused(false);
         globeFocus.active = false;
       } else if (e.key === '+' || e.key === '=') {
-        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 0.6, 1.15, 11.5);
+        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 0.6, 0.7, 15);
       } else if (e.key === '-' || e.key === '_') {
-        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z + 0.6, 1.15, 11.5);
+        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z + 0.6, 0.7, 15);
       } else {
         return;
       }
@@ -585,7 +578,9 @@ export default function Globe() {
         ? themeTextures?.night || hiRes?.map || atmosMap
         : hiRes?.map || atmosMap;
 
-  const cloudOpacity = earthTheme === 'night' ? 0.16 : earthTheme === 'map' ? 0.26 : 0.32;
+  /* Clouds render as a subtle tint (they're weather data, not the map) —
+     dense cloud tops only, so no white film washes the globe. */
+  const cloudOpacity = earthTheme === 'night' ? 0.1 : earthTheme === 'map' ? 0.15 : 0.2;
   const isNightTheme = earthTheme === 'night';
 
   /* Reverse-geocode the clicked point once resolved (race-proof: only applies to the coords it was fetched for) */
@@ -645,11 +640,17 @@ export default function Globe() {
   const interacted = useWeatherStore((s) => s.interacted);
   useEffect(() => {
     if (loc?.lat == null || loc?.lon == null) return;
+    camAnchor.active = false;
+    const narrowMobile =
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches;
     const dir = latLonToVec3(loc.lat, loc.lon, 1);
     targetRot.current = -Math.atan2(dir.x, dir.z);
     if (!interacted) {
       clickedRef.current = false;
-      return;
+      /* Deep links on mobile open in the full-earth view (the rail covers
+         the screen, a close-up would hide the map); on desktop they still
+         fly down to the shared city. */
+      if (narrowMobile) return;
     }
     camTarget.current = {
       z: clickedRef.current ? camTarget.current.z : 1.6,
@@ -657,22 +658,43 @@ export default function Globe() {
     };
     clickedRef.current = false;
     setFocused(true);
+    camAnchor.active = false;
     globeFocus.active = true;
   }, [loc?.lat, loc?.lon, interacted]);
 
-  const selectFromClick = useCallback((event) => {
-    /* Throttle rapid click storms — each hit fires weather + forecast + AQI
-       + reverse-geocode, and 4-6 concurrent clicks will 429 the APIs. */
-    const now = performance.now();
-    if (now - lastClickAt.current < 250) return;
-    lastClickAt.current = now;
-    clickedRef.current = true;
+  /* Collapsing the rail on mobile = "show the map": drop any focus dive so
+     the whole globe becomes visible again. Expanding leaves the view alone. */
+  const detailsCollapsed = useWeatherStore((s) => s.detailsCollapsed);
+  useEffect(() => {
+    const narrow = typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches;
+    if (detailsCollapsed && narrow) {
+      camAnchor.active = false;
+      globeFocus.active = false;
+      setFocused(false);
+      camTarget.current = { z: 10.5, y: 0 };
+    }
+  }, [detailsCollapsed]);
 
+  const selectFromClick = useCallback((event) => {
+    /* Throttle only true double-clicks (same spot, ~400ms). Every OTHER
+       click — including fast clicks on a different spot — is a deliberate
+       move and must land exactly where the user pressed. */
+    const now = performance.now();
+
+    /* Resolve the hit against the PRESS position, not the release: while
+       holding a slow click the pointer can wander a few pixels, and at
+       surface zoom that drift is kilometres. */
+    const p = downClient.current || { x: event.clientX, y: event.clientY };
     const rect = gl.domElement.getBoundingClientRect();
     ndc.set(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
+      ((p.x - rect.left) / rect.width) * 2 - 1,
+      -((p.y - rect.top) / rect.height) * 2 + 1
     );
+    /* The globe may be mid-rotation (drag or fly easing) — refresh the
+       camera + earth matrices so the ray hits the CURRENT surface, not the
+       one from the last rendered frame. */
+    camera.updateMatrixWorld();
+    rotateRef.current.updateWorldMatrix(true, false);
     raycaster.setFromCamera(ndc, camera);
     const hits = raycaster.intersectObject(rotateRef.current, false);
     if (hits.length === 0) return;
@@ -687,6 +709,16 @@ export default function Globe() {
     let lonDeg = Math.atan2(dir.z, -dir.x) * 180 / Math.PI - 180;
     lonDeg = ((lonDeg + 540) % 360) - 180;
 
+    const doubleClickSame =
+      lastSel.current &&
+      now - lastClickAt.current < 400 &&
+      Math.abs(latDeg - lastSel.current.lat) < 0.15 &&
+      Math.abs(lonDeg - lastSel.current.lon) < 0.15;
+    if (doubleClickSame) return;
+    lastClickAt.current = now;
+    lastSel.current = { lat: latDeg, lon: lonDeg };
+    clickedRef.current = true;
+
     const fallback = `${Math.abs(latDeg).toFixed(1)}°${latDeg >= 0 ? 'N' : 'S'}, ${Math.abs(lonDeg).toFixed(1)}°${lonDeg >= 0 ? 'E' : 'W'}`;
     setLocation({ name: fallback, lat: latDeg, lon: lonDeg });
     setPending({ lat: latDeg, lon: lonDeg });
@@ -700,7 +732,7 @@ export default function Globe() {
   const pinHitRef = useRef(false);
   useEffect(() => {
     const onMove = (e) => {
-      if (!pointerDown.current) return;
+      if (!pointerDown.current || multiTouchRef.current) return;
       const dx = e.clientX - dragState.current.x;
       const dy = e.clientY - dragState.current.y;
       dragState.current.moved = Math.max(dragState.current.moved, Math.abs(dx), Math.abs(dy));
@@ -733,22 +765,122 @@ export default function Globe() {
     };
   }, [selectFromClick]);
 
-  /* Mouse wheel: zoom the camera in/out (works whether focused or free-spinning).
-     (No double-click zoom — a quick second click means "pick another place",
-     not "zoom in".) */
+  /* Mouse wheel: zoom the camera in/out — works BOTH in free mode (anchored
+     on the point under the cursor) and while a city is focused (distances the
+     pinned flight so the city stays dead-centre while zooming). */
   useEffect(() => {
     const el = gl.domElement;
     const onWheel = (e) => {
       e.preventDefault();
-      camTarget.current.z = THREE.MathUtils.clamp(
-        camTarget.current.z + e.deltaY * 0.0075,
-        1.15,
-        11.5
+
+      /* Normalize delta units: mice report lines (deltaMode=1), trackpads
+         report pixels (deltaMode=0). Without this some wheels barely move. */
+      const step = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      const factor = 1 + step * 0.0016;
+
+      if (focused) {
+        /* Freshest distance instead of the (possible) stale closure value —
+           read it at event time so rapid scrolls chain smoothly. */
+        const base = globeFocus.active ? globeFocus.dist : 4.5;
+        globeFocus.dist = THREE.MathUtils.clamp(
+          base * factor,
+          3.35,
+          16
+        );
+        camAnchor.active = false;
+        return;
+      }
+
+      /* Free mode — zoom anchored on the point under the cursor: raycast the
+         earth and move the camera along the camera→point line, scaled by the
+         wheel delta. Hovering the edge of the globe now zooms INTO that edge
+         instead of drifting off toward the centre. Misses (sky) fall back to
+         zooming at the globe's centre, like the old wheel. */
+      const rect = el.getBoundingClientRect();
+      ndc.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
       );
+      camera.updateMatrixWorld();
+      rotateRef.current?.updateWorldMatrix(true, false);
+      raycaster.setFromCamera(ndc, camera);
+      const hits = rotateRef.current
+        ? raycaster.intersectObject(rotateRef.current, false)
+        : [];
+
+      const g = groupRef.current;
+      const ax = g && hits.length ? hits[0].point.x : g ? g.position.x : 0;
+      const ay = g && hits.length ? hits[0].point.y : g ? g.position.y : 0;
+      const az = g && hits.length ? hits[0].point.z : g ? g.position.z : 0;
+
+      const dx = camera.position.x - ax;
+      const dy = camera.position.y - ay;
+      const dz = camera.position.z - az;
+      const dist = Math.hypot(dx, dy, dz) || 1;
+
+      /* 2× closer than the old z=1.15 floor (~1.35 surface gap): the camera
+         can now ride down to ~0.7 off the surface, so the earth fills the
+         screen with city-level detail — the "200% more zoom" end of the
+         range. The far end stretches out to 15 for a wider overview. */
+      const newDist = THREE.MathUtils.clamp(dist * factor, 0.7, 15);
+      const k = newDist / dist;
+
+      camAnchor.active = true;
+      camAnchor.x = ax + dx * k;
+      camAnchor.y = ay + dy * k;
+      camAnchor.z = az + dz * k;
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       el.removeEventListener('wheel', onWheel);
+    };
+  }, [gl, camera, ndc, raycaster, focused]);
+
+  /* Touch pinch-zoom: two fingers squeeze to zoom the camera. While a pinch
+     is active the single-finger drag rotation is suppressed, and lifting the
+     second finger never registers as a map click. */
+  useEffect(() => {
+    const el = gl.domElement;
+    el.style.touchAction = 'none';
+    const pointers = new Map();
+    let lastDist = 0;
+    const onDown = (e) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      lastDist = 0;
+    };
+    const onUp = (e) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) lastDist = 0;
+      if (multiTouchRef.current && pointers.size < 2) {
+        multiTouchRef.current = false;
+        dragState.current.moved = 999;
+      }
+    };
+    const onMove = (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size !== 2) return;
+      multiTouchRef.current = true;
+      const [a, b] = [...pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (lastDist > 0) {
+        camTarget.current.z = THREE.MathUtils.clamp(
+          camTarget.current.z + (lastDist - dist) * 0.018,
+          0.7,
+          15
+        );
+      }
+      lastDist = dist;
+    };
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
     };
   }, [gl]);
 
@@ -767,10 +899,21 @@ export default function Globe() {
     const rot = rotateRef.current;
 
     /* Unfocused: keep the camera at the user's zoom distance (wheel / +/-).
-       While focused the CameraSystem fully owns the camera and ray-aims it
-       at the pin, so we only publish the state it needs below. */
+       While the cursor-anchored wheel zoom is active, ease toward the
+       anchored position (off-axis on purpose) and stay in sync with the
+       wheel/+/− zoom state. While focused the CameraSystem fully owns the
+       camera and ray-aims it at the pin, so we only publish the state it
+       needs below. */
     if (!focused) {
-      camera.position.z += (camTarget.current.z - camera.position.z) * zoom;
+      if (camAnchor.active) {
+        const k = Math.min(1, delta * 6);
+        camera.position.x += (camAnchor.x - camera.position.x) * k;
+        camera.position.y += (camAnchor.y - camera.position.y) * k;
+        camera.position.z += (camAnchor.z - camera.position.z) * k;
+        camTarget.current.z = camera.position.z;
+      } else {
+        camera.position.z += (camTarget.current.z - camera.position.z) * zoom;
+      }
     }
 
     if (rot) {
@@ -886,6 +1029,8 @@ export default function Globe() {
         onPointerDown={(e) => {
           e.stopPropagation();
           pointerDown.current = true;
+          camAnchor.active = false;
+          downClient.current = { x: e.clientX, y: e.clientY };
           dragState.current = {
             x: e.clientX,
             y: e.clientY,
@@ -924,6 +1069,21 @@ export default function Globe() {
             to the surface while the globe drifts. */}
         <PinMarker position={pinPosition} />
 
+        {/* Weather overlays — re-projected OWM raster tiles riding the
+            surface (clouds float on their own slower layer above). The
+            alpha mode isolates the weather data from each tile basemap:
+            temp = pastel gradient (saturation), rain = dark basemap
+            (luma), wind = light basemap (brightness). */}
+        {weatherLayers.temperature && (
+          <MapLayer layer="temp_new" radius={1.507} opacity={earthTheme === 'night' ? 0.55 : 0.8} alphaMode="saturation" />
+        )}
+        {weatherLayers.precipitation && (
+          <MapLayer layer="precipitation_new" radius={1.507} opacity={earthTheme === 'night' ? 0.5 : 0.78} alphaMode="luma" />
+        )}
+        {weatherLayers.wind && (
+          <MapLayer layer="wind_new" radius={1.507} opacity={earthTheme === 'night' ? 0.5 : 0.62} alphaMode="brightness" />
+        )}
+
         {travelPins.map((d) => (
           <TravelPin
             key={`${d.lat.toFixed(3)},${d.lon.toFixed(3)}`}
@@ -932,10 +1092,15 @@ export default function Globe() {
               pinHitRef.current = true;
             }}
             onFly={() => {
-              /* A drag that merely ends over a pin must not fly anywhere,
-                 and rapid double-selection is throttled like map clicks. */
+              /* A drag that merely ends over a pin must not fly anywhere.
+                 Only repeat clicks on the SAME pin are throttled — a fast
+                 click on another pin is a deliberate move between places. */
               const now = performance.now();
-              if (dragState.current.moved >= 8 || now - lastClickAt.current < 250) return;
+              const samePin =
+                lat != null && lon != null &&
+                Math.abs(d.lat - lat) < 0.05 &&
+                Math.abs(d.lon - lon) < 0.05;
+              if (dragState.current.moved >= 8 || now - lastClickAt.current < (samePin ? 250 : 100)) return;
               lastClickAt.current = now;
               setLocation({ name: d.name, lat: d.lat, lon: d.lon });
             }}

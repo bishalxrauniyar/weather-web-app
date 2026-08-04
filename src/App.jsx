@@ -1,11 +1,11 @@
 import { Component, Suspense, lazy, useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Leva } from 'leva';
 import LoadingScreen from './components/ui/LoadingScreen';
 import { useGeolocation } from './hooks/useWeather';
 
 const WeatherScene = lazy(() => import('./components/3d/WeatherScene'));
 const WeatherDashboard = lazy(() => import('./components/WeatherDashboard'));
+const DebugLeva = lazy(() => import('./components/ui/DebugLeva'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -67,7 +67,7 @@ function AppContent() {
           <WeatherDashboard />
         </Suspense>
       </div>
-      <Leva collapsed hidden />
+      <DebugLeva />
     </>
   );
 }

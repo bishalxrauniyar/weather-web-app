@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import Icon from './icons';
 import { toUnit, unitSymbol } from '../../storage/weatherUtils';
 
-export default function DailyForecast({ forecast, units = 'metric' }) {
+export default function DailyForecast({ forecast, units = 'metric', onSelect }) {
   const days = useMemo(() => {
     if (!forecast?.list) return [];
 
@@ -22,6 +22,7 @@ export default function DailyForecast({ forecast, units = 'metric' }) {
       const today = idx === 0;
 
       return {
+        items,
         label: today ? 'Today' : date.toLocaleDateString([], { weekday: 'short' }),
         icon: mid.weather[0].icon,
         cond: mid.weather[0].description,
@@ -50,7 +51,17 @@ export default function DailyForecast({ forecast, units = 'metric' }) {
             initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: i * 0.04, duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-            className="day-row"
+            className="day-row clickable"
+            role="button"
+            tabIndex={0}
+            aria-label={`${day.label} — ${day.cond}, high ${day.max}${unitSymbol(units)}, low ${day.min}${unitSymbol(units)}. Open full-day details`}
+            onClick={() => onSelect?.(day)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect?.(day);
+              }
+            }}
           >
             <span className={`day-label ${day.label === 'Today' ? 'today' : ''}`}>{day.label}</span>
             <Icon name={day.icon} size={20} className="text-white/80 justify-self-center" />
@@ -68,6 +79,11 @@ export default function DailyForecast({ forecast, units = 'metric' }) {
               <span className="max">{day.max}{unitSymbol(units)}</span>
               <span className="min">{day.min}{unitSymbol(units)}</span>
             </div>
+            <span className="day-chev text-white/50 flex items-center justify-center">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </span>
           </motion.div>
         );
       })}

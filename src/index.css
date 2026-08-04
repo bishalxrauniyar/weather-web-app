@@ -36,11 +36,10 @@
   --shadow-panel: 0 24px 60px -20px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+/* (The Tailwind preflight reset — layered in @layer base — already provides
+   `* { margin: 0; padding: 0; box-sizing: border-box }`. Keeping an unlayered
+   copy of it here would silently override every Tailwind spacing utility,
+   because unlayered author CSS beats layered rules. Removed on purpose.) */
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -178,13 +177,47 @@ canvas { display: block; }
 .content-rail::-webkit-scrollbar-track { background: transparent; }
 
 @media (max-width: 640px) {
+  /* Mobile: the globe stays visible — the weather rail becomes a bottom
+     sheet over the lower part of the screen instead of covering it all. */
   .content-rail {
-    width: calc(100vw - 24px);
-    margin: 0 12px;
-    padding: 20px;
-    border-radius: 22px;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: 34vh;
+    width: 100%;
+    margin: 0;
+    padding: 18px 18px 28px;
+    border-radius: 24px 24px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    max-width: none;
+    transition: transform 0.35s cubic-bezier(0.32, 0.72, 0.24, 1);
   }
+  .content-rail::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.18);
+    margin: 2px auto 18px;
+    position: sticky;
+    top: 4px;
+  }
+  /* Map mode: the rail collapses to a slim strip so the globe map fills
+     the screen — the grabber pill stays visible as an affordance. */
+  .rail-collapsed .content-rail {
+    transform: translateY(calc(100% - 34px));
+  }
+  .map-toggle { display: inline-flex; }
   .topbar { padding: 12px; flex-wrap: wrap; }
+}
+
+/* The map/details toggle is a mobile-only control */
+@media (min-width: 641px) {
+  .map-toggle { display: none; }
 }
 
 /* ═══ Location hero ═══ */
@@ -425,14 +458,117 @@ canvas { display: block; }
 
 .day-row {
   display: grid;
-  grid-template-columns: 52px 26px 1fr 46px 52px;
+  grid-template-columns: 52px 26px 1fr 46px 68px 16px;
   align-items: center;
   gap: 10px;
   padding: 11px 4px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
 }
 
 .day-row:last-child { border-bottom: none; }
+
+.day-row.clickable {
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.day-row.clickable:hover { background: rgba(255, 255, 255, 0.045); }
+.day-row.clickable:active { transform: scale(0.995); }
+
+.day-row.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.day-row.clickable .day-chev {
+  opacity: 0.35;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.day-row.clickable:hover .day-chev {
+  opacity: 0.9;
+  transform: translateX(2px);
+}
+
+/* ═══ Day detail modal — hourly strip + stat cards ═══ */
+.day-hour-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+
+.day-hour-chip {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  min-width: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.day-hour-chip .chip-time {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-lo);
+}
+
+.day-hour-chip .chip-temp {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+
+.day-hour-chip .chip-pop {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--accent);
+  min-height: 11px;
+}
+
+.day-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.day-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.day-stat-card svg { color: var(--accent); flex-shrink: 0; }
+
+.day-stat-card .ds-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-lo);
+}
+
+.day-stat-card .ds-value {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+
+@media (max-width: 640px) {
+  .day-stat-grid { grid-template-columns: 1fr; }
+}
 
 .day-row .day-label {
   font-size: 13px;
@@ -477,7 +613,9 @@ canvas { display: block; }
 
 .day-temps {
   display: flex;
-  justify-content: space-between;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 7px;
   font-family: var(--font-display);
   font-size: 12.5px;
   font-weight: 600;

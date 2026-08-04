@@ -131,15 +131,51 @@ export const useCurrentWeather = () => {
   });
 };
 
-/* One forecast query, shared by every consumer (3h blocks, 5-6 days). */
+/* Ten-day forecast. OpenWeather only serves 5 days (3h blocks), so the
+   Open-Meteo feed backfills days 6-10 — the list is always ~10 days and
+   every day keeps the same 3-hourly shape the UI expects. With no API key
+   the Open-Meteo feed stands alone. */
 export const useForecast = () => {
   const { location } = useWeatherStore();
   return useQuery({
     queryKey: ['forecast', location.lat, location.lon],
-    queryFn: withFallback(
-      () => `${BASE}/forecast?lat=${location.lat}&lon=${location.lon}&units=metric&appid=${API_KEY}`,
-      () => openMeteoForecast(location.lat, location.lon)
-    ),
+    queryFn: async () => {
+      let om = null;
+      try {
+        om = await openMeteoForecast(location.lat, location.lon);
+      } catch {
+        /* Open-Meteo down — OWM may still work */
+      }
+      if (!API_KEY) {
+        if (om) return om;
+        throw new Error('Forecast unavailable');
+      }
+      try {
+        const owm = await fetchJson(
+          `${BASE}/forecast?lat=${location.lat}&lon=${location.lon}&units=metric&appid=${API_KEY}`
+        );
+        if (om?.list?.length) {
+          /* Keep OWM's own 3h blocks for the days it covers, append the
+             Open-Meteo blocks for the days beyond (deduped by calendar day). */
+          const owmDays = new Set(
+            owm.list.map((i) => new Date(i.dt * 1000).toDateString())
+          );
+          const extra = om.list.filter(
+            (i) => !owmDays.has(new Date(i.dt * 1000).toDateString())
+          );
+          return {
+            ...owm,
+            list: [...owm.list, ...extra],
+            alerts: om.alerts?.length ? om.alerts : owm.alerts,
+            _source: 'open-weather',
+          };
+        }
+        return owm;
+      } catch {
+        if (om) return om;
+        throw new Error('Weather service unavailable');
+      }
+    },
     enabled: !!location?.lat && !!location?.lon,
     staleTime: 15 * 60 * 1000,
     refetchInterval: 15 * 60 * 1000,

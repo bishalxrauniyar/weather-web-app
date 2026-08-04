@@ -7,6 +7,7 @@ import {
   getBeaufort,
   getPressureTrend,
   getUVBurnTime,
+  toUnit,
 } from '../../storage/weatherUtils';
 import { useWeatherStore } from '../../store/weatherStore';
 
@@ -15,11 +16,21 @@ function feelsLikeDelta(weather) {
   return Math.round(weather.main.feels_like - weather.main.temp);
 }
 
-function buildDetail(type, weather, forecastList, uvIndex) {
+function buildDetail(type, weather, forecastList, uvIndex, units) {
   const temp = weather?.main?.temp ?? 0;
   const feels = weather?.main?.feels_like ?? temp;
   const windKmh = Math.round((weather?.wind?.speed || 0) * 3.6);
   const gustKmh = weather?.wind?.gust ? Math.round(weather.wind.gust * 3.6) : null;
+  /* Imperial: km/h → mph for display (metric keeps km/h) */
+  const windSpeed =
+    units === 'imperial' ? Math.round((weather?.wind?.speed || 0) * 2.23694) : windKmh;
+  const gustSpeed =
+    weather?.wind?.gust != null
+      ? units === 'imperial'
+        ? Math.round(weather.wind.gust * 2.23694)
+        : Math.round(weather.wind.gust * 3.6)
+      : null;
+  const speedUnit = units === 'imperial' ? 'mph' : 'km/h';
   const humidity = weather?.main?.humidity ?? 0;
   const dew = getDewPoint(weather?.main?.temp, weather?.main?.humidity);
   const pressure = weather?.main?.pressure ?? 0;
@@ -29,6 +40,8 @@ function buildDetail(type, weather, forecastList, uvIndex) {
   const uv = Math.round(uvIndex || Math.max(0, 11 - Math.round((weather?.clouds?.all || 0) / 10)));
   const uvLevel = uv <= 2 ? 'Low' : uv <= 5 ? 'Moderate' : uv <= 7 ? 'High' : uv <= 10 ? 'Very High' : 'Extreme';
   const cloudPct = weather?.clouds?.all ?? 0;
+  const t = (c) => `${Math.round(toUnit(c, units))}°`;
+  const dist = units === 'imperial' ? (km) => `${(km * 0.621371).toFixed(1)} mi` : (km) => `${km.toFixed(1)} km`;
 
   switch (type) {
     case 'TEMPERATURE': {
@@ -43,13 +56,13 @@ function buildDetail(type, weather, forecastList, uvIndex) {
                 ? 'Bundle up — exposed skin gets uncomfortable fast in this cold.'
                 : 'Conditions are mild — a light layer is all you need.';
       return {
-        headline: `${Math.round(temp)}° now, feels like ${Math.round(feels)}°`,
+        headline: `${t(temp)} now, feels like ${t(feels)}`,
         icon: 'feelslike',
         stats: [
-          { label: 'Current', value: `${Math.round(temp)}°` },
-          { label: 'Feels like', value: `${Math.round(feels)}°` },
-          { label: 'Today high', value: `${Math.round(weather?.main?.temp_max ?? temp)}°` },
-          { label: 'Today low', value: `${Math.round(weather?.main?.temp_min ?? temp)}°` },
+          { label: 'Current', value: t(temp) },
+          { label: 'Feels like', value: t(feels) },
+          { label: 'Today high', value: t(weather?.main?.temp_max ?? temp) },
+          { label: 'Today low', value: t(weather?.main?.temp_min ?? temp) },
         ],
         advice,
       };
@@ -58,20 +71,20 @@ function buildDetail(type, weather, forecastList, uvIndex) {
     case 'WIND': {
       const chillNote =
         delta <= -4
-          ? `Wind chill drags the perceived temperature to ${Math.round(feels)}°.`
-          : gustKmh
-            ? `Gusts of ${gustKmh} km/h can knock loose objects around.`
+          ? `Wind chill drags the perceived temperature to ${t(feels)}.`
+          : gustSpeed
+            ? `Gusts of ${gustSpeed} ${speedUnit} can knock loose objects around.`
             : 'Steady breeze — no major gusts expected.';
       return {
-        headline: `${getBeaufort(windKmh)} · ${windKmh} km/h`,
+        headline: `${getBeaufort(windKmh)} · ${windSpeed} ${speedUnit}`,
         icon: 'wind',
         stats: [
-          { label: 'Speed', value: `${windKmh} km/h` },
+          { label: 'Speed', value: `${windSpeed} ${speedUnit}` },
           { label: 'Direction', value: weather?.wind?.deg != null ? getWindDirection(weather.wind.deg) : '—' },
-          { label: 'Gusts', value: gustKmh ? `${gustKmh} km/h` : 'Calm' },
-          { label: 'Chill effect', value: `${Math.round(feels)}°` },
+          { label: 'Gusts', value: gustSpeed ? `${gustSpeed} ${speedUnit}` : 'Calm' },
+          { label: 'Chill effect', value: t(feels) },
         ],
-        advice: windKmh >= 40
+        advice: windSpeed >= (units === 'imperial' ? 25 : 40)
           ? 'Strong winds — secure loose outdoor items and expect bumpy conditions.'
           : chillNote,
       };
@@ -93,8 +106,8 @@ function buildDetail(type, weather, forecastList, uvIndex) {
         icon: 'drop',
         stats: [
           { label: 'Humidity', value: `${humidity}%`, pct: Math.min(humidity / 100, 1) },
-          { label: 'Dew point', value: dew != null ? `${Math.round(dew)}°` : '—' },
-          { label: 'Feels like', value: `${Math.round(feels)}°` },
+          { label: 'Dew point', value: dew != null ? t(dew) : '—' },
+          { label: 'Feels like', value: t(feels) },
           { label: 'Comfort', value: comfort },
         ],
         advice: humidity >= 75 && temp >= 24
@@ -151,10 +164,10 @@ function buildDetail(type, weather, forecastList, uvIndex) {
     case 'VISIBILITY': {
       const cond = visibilityKm >= 10 ? 'Clear' : visibilityKm >= 5 ? 'Moderate' : visibilityKm >= 2 ? 'Hazy' : 'Poor';
       return {
-        headline: `${visibilityKm.toFixed(1)} km · ${cond}`,
+        headline: `${dist(visibilityKm)} · ${cond}`,
         icon: 'eye',
         stats: [
-          { label: 'Distance', value: `${visibilityKm.toFixed(1)} km`, pct: Math.min(visibilityKm / 10, 1) },
+          { label: 'Distance', value: dist(visibilityKm), pct: Math.min(visibilityKm / 10, 1) },
           { label: 'Condition', value: cond },
           { label: 'Driving', value: visibilityKm >= 10 ? 'Full visibility' : visibilityKm >= 5 ? 'Easy going' : 'Take it slow' },
           { label: 'Fog risk', value: visibilityKm < 2 ? 'High' : visibilityKm < 5 ? 'Possible' : 'Low' },
@@ -177,7 +190,7 @@ function buildSparkline(forecastList) {
   return forecastList.slice(0, 24).map((h) => h?.main?.temp).filter((t) => t != null);
 }
 
-function Sparkline({ temps }) {
+function Sparkline({ temps, units }) {
   if (!temps || temps.length < 2) return null;
   const w = 300;
   const h = 64;
@@ -191,19 +204,20 @@ function Sparkline({ temps }) {
   });
   const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
   const area = `0,${h} ${line} ${w},${h}`;
+  const t = (c) => `${Math.round(toUnit(c, units))}°`;
 
   return (
-    <div className="relative mt-6">
+    <div className="relative mt-4">
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.13em] text-white/40">
           Next 24 hours
         </span>
         <div className="flex items-center gap-3 text-[11px]">
-          <span className="text-[#5ee0ff]">{Math.round(max)}° high</span>
-          <span className="text-white/40">{Math.round(min)}° low</span>
+          <span className="text-[#5ee0ff]">{t(max)} high</span>
+          <span className="text-white/40">{t(min)} low</span>
         </div>
       </div>
-      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-16" preserveAspectRatio="none">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-12" preserveAspectRatio="none">
         <defs>
           <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
@@ -237,6 +251,7 @@ function Sparkline({ temps }) {
 export default function WeatherDetail({ isOpen, onClose, type, weather, forecast }) {
   const uvIndex = useWeatherStore((s) => s.uvIndex);
   const location = useWeatherStore((s) => s.location);
+  const units = useWeatherStore((s) => s.units);
 
   useEffect(() => {
     const handleEsc = (e) => {
@@ -252,7 +267,7 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
     };
   }, [isOpen, onClose]);
 
-  const data = type ? buildDetail(type, weather, forecast?.list, uvIndex) : null;
+  const data = type ? buildDetail(type, weather, forecast?.list, uvIndex, units) : null;
 
   return (
     <AnimatePresence>
@@ -282,7 +297,7 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
               />
 
               {/* Header */}
-              <div className="relative overflow-hidden px-[50px] pt-12 pb-10">
+              <div className="relative overflow-hidden px-8 pt-7 pb-6">
                 <div
                   className="absolute inset-0 pointer-events-none"
                   style={{
@@ -290,11 +305,11 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                   }}
                 />
                 <div className="relative flex items-start justify-between gap-4">
-                  <div className="flex items-center gap-5">
+                  <div className="flex items-center gap-4">
                     <motion.span
                       animate={{ y: [0, -3, 0], rotate: [0, -3, 0] }}
                       transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
-                      className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                      className="w-12 h-12 rounded-2xl flex items-center justify-center"
                       style={{
                         background: 'linear-gradient(145deg, var(--accent-soft), rgba(255,255,255,0.04))',
                         border: '1px solid var(--line-strong)',
@@ -302,13 +317,13 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                         boxShadow: '0 8px 24px -8px var(--accent-soft)',
                       }}
                     >
-                      <MetricIcon name={data.icon} size={30} />
+                      <MetricIcon name={data.icon} size={24} />
                     </motion.span>
                     <div>
-                      <h2 className="text-[34px] font-semibold leading-tight tracking-tight">
+                      <h2 className="text-2xl font-semibold leading-tight tracking-tight">
                         {data.headline}
                       </h2>
-                      <span className="block mt-2 text-sm text-white/45">
+                      <span className="block mt-1.5 text-sm text-white/45">
                         {location?.name}
                         {weather?.weather?.[0]?.description
                           ? ` · ${weather.weather[0].description}`
@@ -319,9 +334,9 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                   <button
                     onClick={onClose}
                     aria-label="Close"
-                    className="w-11 h-11 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/12 hover:rotate-90 transition-all duration-200 text-white/60 hover:text-white shrink-0 border border-white/10"
+                    className="w-9 h-9 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/12 hover:rotate-90 transition-all duration-200 text-white/60 hover:text-white shrink-0 border border-white/10"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
@@ -329,7 +344,7 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
               </div>
 
               {/* Hero stat */}
-              <div className="px-[50px]">
+              <div className="px-8">
                 <motion.div
                   initial={{ opacity: 0, y: 14 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -337,13 +352,13 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                 >
                   <span className="label-text">{data.stats[0].label}</span>
                   <p
-                    className="mt-3 text-[68px] font-bold leading-none tracking-tight"
+                    className="mt-2 text-6xl font-bold leading-none tracking-tight"
                     style={{ fontFamily: 'var(--font-display)' }}
                   >
                     {data.stats[0].value}
                   </p>
                   {data.stats[0].pct != null && (
-                    <div className="mt-6 h-2.5 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div className="mt-4 h-2 rounded-full bg-white/[0.06] overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
                         animate={{ width: `${Math.round(data.stats[0].pct * 100)}%` }}
@@ -365,12 +380,12 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.12, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                className="mx-[50px] mt-8 border-t border-b border-white/[0.07] divide-y divide-white/[0.05]"
+                className="mx-8 mt-6 border-t border-b border-white/[0.07] divide-y divide-white/[0.05]"
               >
                 {data.stats.slice(1).map((stat, i) => (
-                  <div key={stat.label} className="flex items-center justify-between py-[26px]">
-                    <span className="text-[15px] text-white/45">{stat.label}</span>
-                    <span className="text-lg font-semibold tracking-tight text-white/90">
+                  <div key={stat.label} className="flex items-center justify-between py-3.5">
+                    <span className="text-sm text-white/45">{stat.label}</span>
+                    <span className="text-base font-semibold tracking-tight text-white/90">
                       {stat.value}
                     </span>
                   </div>
@@ -378,18 +393,18 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
               </motion.div>
 
               {type === 'TEMPERATURE' && (
-                <div className="px-[50px]">
-                  <Sparkline temps={buildSparkline(forecast?.list)} />
+                <div className="px-8">
+                  <Sparkline temps={buildSparkline(forecast?.list)} units={units} />
                 </div>
               )}
 
               {/* Practical advice */}
-              <div className="px-[50px] pt-8 pb-12">
+              <div className="px-8 pt-6 pb-8">
                 <motion.div
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.2, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-                  className="relative overflow-hidden rounded-2xl p-[26px] pl-[30px]"
+                  className="relative overflow-hidden rounded-2xl p-5 pl-6"
                   style={{
                     background: `linear-gradient(135deg, var(--accent-soft), transparent 65%)`,
                     border: '1px solid var(--line-strong)',
@@ -397,17 +412,17 @@ export default function WeatherDetail({ isOpen, onClose, type, weather, forecast
                 >
                   <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: 'var(--accent)' }} />
                   <p
-                    className="text-[11px] font-semibold uppercase tracking-[0.13em] mb-3"
+                    className="text-[11px] font-semibold uppercase tracking-[0.13em] mb-2"
                     style={{ color: 'var(--accent)' }}
                   >
                     What it means for you
                   </p>
-                  <p className="text-base text-white/75 leading-relaxed">{data.advice}</p>
+                  <p className="text-sm text-white/75 leading-relaxed">{data.advice}</p>
                 </motion.div>
-                <div className="flex justify-end mt-7">
+                <div className="flex justify-end mt-5">
                   <button
                     onClick={onClose}
-                    className="text-sm font-semibold px-7 py-3 rounded-full transition-colors"
+                    className="text-sm font-semibold px-6 py-2.5 rounded-full transition-colors"
                     style={{
                       color: 'var(--accent)',
                       background: 'var(--accent-soft)',
