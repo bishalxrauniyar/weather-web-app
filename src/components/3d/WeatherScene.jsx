@@ -223,7 +223,7 @@ export default function WeatherScene() {
     <div className="fixed inset-0" style={{ background: bg }}>
       <Canvas
         key={ctxKey}
-        camera={{ position: [0, 2, 13], fov: 50, near: 0.1, far: 150 }}
+        camera={{ position: [0, 2, 13], fov: 50, near: 0.01, far: 150 }}
         dpr={[1, 2]}
         gl={{
           antialias: true,
