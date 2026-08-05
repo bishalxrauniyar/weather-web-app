@@ -1,24 +1,61 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
-import { useWeatherStore } from '../store/weatherStore';
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useWeatherStore } from "../store/weatherStore";
 import {
   openMeteoCurrent,
   openMeteoForecast,
   openMeteoAirQuality,
   openMeteoGeocode,
   bdcReverse,
-} from '../lib/openMeteo';
+} from "../lib/openMeteo";
 
-const API_KEY = import.meta.env.VITE_OPENWEATHER_KEY || '';
-const BASE = 'https://api.openweathermap.org/data/2.5';
-const GEO = 'https://api.openweathermap.org/geo/1.0';
-const OM_FORECAST = 'https://api.open-meteo.com/v1/forecast';
+const API_KEY = import.meta.env.VITE_OPENWEATHER_KEY || "";
+const BASE = "https://api.openweathermap.org/data/2.5";
+const GEO = "https://api.openweathermap.org/geo/1.0";
+const OM_FORECAST = "https://api.open-meteo.com/v1/forecast";
+const CURRENT_CACHE_TTL = 30 * 60 * 1000;
+const FORECAST_CACHE_TTL = 60 * 60 * 1000;
 
 const fetchJson = async (url) => {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
   return res.json();
 };
+
+function cacheGet(key, ttlMs = Infinity) {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.at !== "number") return null;
+    if (Date.now() - parsed.at > ttlMs) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function cacheGetAnyAge(key) {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.at === "number" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheSet(key, data) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(key, JSON.stringify({ at: Date.now(), data }));
+  } catch {
+    /* Ignore quota/storage errors and continue with live mode. */
+  }
+}
 
 /* Try OpenWeather first, silently fall back to keyless Open-Meteo.
    Every hook stays identical for consumers — the payload shapes match. */
@@ -36,23 +73,23 @@ const withFallback = (owmUrl, omFn) => async () => {
 export const useAlerts = () => {
   const { location } = useWeatherStore();
   return useQuery({
-    queryKey: ['alerts', location.lat, location.lon],
+    queryKey: ["alerts", location.lat, location.lon],
     queryFn: async () => {
       const p = new URLSearchParams({
         latitude: location.lat,
         longitude: location.lon,
-        timezone: 'auto',
+        timezone: "auto",
         forecast_days: 2,
-        current: 'temperature_2m',
-        alerts: 'true',
+        current: "temperature_2m",
+        alerts: "true",
       });
       const d = await (await fetch(`${OM_FORECAST}?${p}`)).json();
       return (d.alerts || []).map((a) => ({
-        event: a.title || 'Weather alert',
+        event: a.title || "Weather alert",
         start: Date.parse(a.start) / 1000,
         end: Date.parse(a.end) / 1000,
         description: a.description,
-        severity: (a.severity || 'warning').toLowerCase(),
+        severity: (a.severity || "warning").toLowerCase(),
       }));
     },
     enabled: !!location?.lat && !!location?.lon,
@@ -64,10 +101,11 @@ export const useAlerts = () => {
 export const useAQI = () => {
   const { location } = useWeatherStore();
   return useQuery({
-    queryKey: ['aqi', location.lat, location.lon],
+    queryKey: ["aqi", location.lat, location.lon],
     queryFn: withFallback(
-      () => `${BASE}/air_pollution?lat=${location.lat}&lon=${location.lon}&appid=${API_KEY}`,
-      () => openMeteoAirQuality(location.lat, location.lon)
+      () =>
+        `${BASE}/air_pollution?lat=${location.lat}&lon=${location.lon}&appid=${API_KEY}`,
+      () => openMeteoAirQuality(location.lat, location.lon),
     ),
     enabled: !!location?.lat && !!location?.lon,
     staleTime: 30 * 60 * 1000,
@@ -79,10 +117,10 @@ export const useAQI = () => {
 export const useUVIndex = () => {
   const { location } = useWeatherStore();
   return useQuery({
-    queryKey: ['uv-index', location.lat, location.lon],
+    queryKey: ["uv-index", location.lat, location.lon],
     queryFn: () =>
       fetchJson(
-        `${BASE}/uvi/forecast?lat=${location.lat}&lon=${location.lon}&appid=${API_KEY}`
+        `${BASE}/uvi/forecast?lat=${location.lat}&lon=${location.lon}&appid=${API_KEY}`,
       ),
     enabled: !!API_KEY && !!location?.lat && !!location?.lon,
     staleTime: 30 * 60 * 1000,
@@ -92,10 +130,10 @@ export const useUVIndex = () => {
 
 export const useInverseGeocode = (lat, lon) => {
   return useQuery({
-    queryKey: ['inverse-geocode', lat, lon],
+    queryKey: ["inverse-geocode", lat, lon],
     queryFn: withFallback(
       () => `${GEO}/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${API_KEY}`,
-      () => bdcReverse(lat, lon)
+      () => bdcReverse(lat, lon),
     ),
     enabled: !!lat && !!lon,
     staleTime: 60 * 60 * 1000,
@@ -105,10 +143,11 @@ export const useInverseGeocode = (lat, lon) => {
 
 export const useWeatherByCoords = (lat, lon) => {
   return useQuery({
-    queryKey: ['weather', lat, lon],
+    queryKey: ["weather", lat, lon],
     queryFn: withFallback(
-      () => `${BASE}/weather?lat=${lat}&lon=${lon}&units=metric&appid=${API_KEY}`,
-      () => openMeteoCurrent(lat, lon)
+      () =>
+        `${BASE}/weather?lat=${lat}&lon=${lon}&units=metric&appid=${API_KEY}`,
+      () => openMeteoCurrent(lat, lon),
     ),
     enabled: !!lat && !!lon,
     staleTime: 5 * 60 * 1000,
@@ -118,13 +157,40 @@ export const useWeatherByCoords = (lat, lon) => {
 
 export const useCurrentWeather = () => {
   const { location } = useWeatherStore();
+  const lat = location?.lat;
+  const lon = location?.lon;
+  const cacheKey =
+    lat != null && lon != null
+      ? `wx:current:${lat.toFixed(3)}:${lon.toFixed(3)}`
+      : null;
+
   return useQuery({
-    queryKey: ['weather', location.lat, location.lon],
-    queryFn: withFallback(
-      () => `${BASE}/weather?lat=${location.lat}&lon=${location.lon}&units=metric&appid=${API_KEY}`,
-      () => openMeteoCurrent(location.lat, location.lon)
-    ),
-    enabled: !!location?.lat && !!location?.lon,
+    queryKey: ["weather", lat, lon],
+    queryFn: async () => {
+      try {
+        const data = await withFallback(
+          () =>
+            `${BASE}/weather?lat=${lat}&lon=${lon}&units=metric&appid=${API_KEY}`,
+          () => openMeteoCurrent(lat, lon),
+        )();
+        if (cacheKey) cacheSet(cacheKey, data);
+        return data;
+      } catch (err) {
+        const cached = cacheKey ? cacheGetAnyAge(cacheKey) : null;
+        if (cached?.data) {
+          return {
+            ...cached.data,
+            _stale: true,
+            _cachedAt: cached.at,
+          };
+        }
+        throw err;
+      }
+    },
+    enabled: !!lat && !!lon,
+    initialData: cacheKey
+      ? cacheGet(cacheKey, CURRENT_CACHE_TTL)?.data
+      : undefined,
     staleTime: 5 * 60 * 1000,
     refetchInterval: 5 * 60 * 1000,
     retry: 2,
@@ -136,7 +202,7 @@ export const useCurrentWeather = () => {
 function hourlyFrom3h(list) {
   const out = [];
   list.forEach((i) => {
-    const rain = i.rain?.['3h'] ?? i.rain?.['1h'] ?? 0;
+    const rain = i.rain?.["3h"] ?? i.rain?.["1h"] ?? 0;
     const pop = i.pop || 0;
     for (let k = 0; k < 3; k++) {
       out.push({
@@ -156,49 +222,66 @@ function hourlyFrom3h(list) {
    the Open-Meteo feed stands alone. */
 export const useForecast = () => {
   const { location } = useWeatherStore();
+  const lat = location?.lat;
+  const lon = location?.lon;
+  const cacheKey =
+    lat != null && lon != null
+      ? `wx:forecast:${lat.toFixed(3)}:${lon.toFixed(3)}`
+      : null;
+
   return useQuery({
-    queryKey: ['forecast', location.lat, location.lon],
+    queryKey: ["forecast", lat, lon],
     queryFn: async () => {
-      let om = null;
       try {
-        om = await openMeteoForecast(location.lat, location.lon);
-      } catch {
-        /* Open-Meteo down — OWM may still work */
-      }
-      if (!API_KEY) {
-        if (om) return om;
-        throw new Error('Forecast unavailable');
-      }
-      try {
+        let om = null;
+        try {
+          om = await openMeteoForecast(lat, lon);
+        } catch {
+          /* Open-Meteo down — OWM may still work */
+        }
+        if (!API_KEY) {
+          if (!om) throw new Error("Forecast unavailable");
+          if (cacheKey) cacheSet(cacheKey, om);
+          return om;
+        }
         const owm = await fetchJson(
-          `${BASE}/forecast?lat=${location.lat}&lon=${location.lon}&units=metric&appid=${API_KEY}`
+          `${BASE}/forecast?lat=${lat}&lon=${lon}&units=metric&appid=${API_KEY}`,
         );
-        if (om?.list?.length) {
-          /* Keep OWM's own 3h blocks for the days it covers, append the
-             Open-Meteo blocks for the days beyond (deduped by calendar day). */
-          const owmDays = new Set(
-            owm.list.map((i) => new Date(i.dt * 1000).toDateString())
-          );
-          const extra = om.list.filter(
-            (i) => !owmDays.has(new Date(i.dt * 1000).toDateString())
-          );
+        const merged = om?.list?.length
+          ? (() => {
+              const owmDays = new Set(
+                owm.list.map((i) => new Date(i.dt * 1000).toDateString()),
+              );
+              const extra = om.list.filter(
+                (i) => !owmDays.has(new Date(i.dt * 1000).toDateString()),
+              );
+              return {
+                ...owm,
+                list: [...owm.list, ...extra],
+                _hourly: om._hourly || hourlyFrom3h(owm.list),
+                alerts: om.alerts?.length ? om.alerts : owm.alerts,
+                _source: "open-weather",
+              };
+            })()
+          : { ...owm, _hourly: hourlyFrom3h(owm.list) };
+        if (cacheKey) cacheSet(cacheKey, merged);
+        return merged;
+      } catch (err) {
+        const cached = cacheKey ? cacheGetAnyAge(cacheKey) : null;
+        if (cached?.data) {
           return {
-            ...owm,
-            list: [...owm.list, ...extra],
-            /* Per-hour rain: Open-Meteo's real hourly feed covers all 10
-               days. When it's down, spread each 3h block over its hours. */
-            _hourly: om._hourly || hourlyFrom3h(owm.list),
-            alerts: om.alerts?.length ? om.alerts : owm.alerts,
-            _source: 'open-weather',
+            ...cached.data,
+            _stale: true,
+            _cachedAt: cached.at,
           };
         }
-        return { ...owm, _hourly: hourlyFrom3h(owm.list) };
-      } catch {
-        if (om) return om;
-        throw new Error('Weather service unavailable');
+        throw err;
       }
     },
-    enabled: !!location?.lat && !!location?.lon,
+    enabled: !!lat && !!lon,
+    initialData: cacheKey
+      ? cacheGet(cacheKey, FORECAST_CACHE_TTL)?.data
+      : undefined,
     staleTime: 15 * 60 * 1000,
     refetchInterval: 15 * 60 * 1000,
     retry: 2,
@@ -211,10 +294,11 @@ export const useForecastHrs = () => useForecast();
 
 export const useCitySearch = (query) => {
   return useQuery({
-    queryKey: ['city-search', query],
+    queryKey: ["city-search", query],
     queryFn: withFallback(
-      () => `${GEO}/direct?q=${encodeURIComponent(query)}&limit=5&appid=${API_KEY}`,
-      () => openMeteoGeocode(query)
+      () =>
+        `${GEO}/direct?q=${encodeURIComponent(query)}&limit=5&appid=${API_KEY}`,
+      () => openMeteoGeocode(query),
     ),
     enabled: query?.length >= 2,
     staleTime: 60 * 60 * 1000,
@@ -225,10 +309,10 @@ export const useGeolocation = () => {
   const { setLocation } = useWeatherStore();
 
   return useQuery({
-    queryKey: ['geolocation'],
+    queryKey: ["geolocation"],
     queryFn: async () => {
       if (!navigator.geolocation) {
-        throw new Error('Geolocation not supported');
+        throw new Error("Geolocation not supported");
       }
 
       const pos = await new Promise((resolve, reject) => {
@@ -241,10 +325,12 @@ export const useGeolocation = () => {
 
       const { latitude: lat, longitude: lon } = pos.coords;
 
-      let name = 'Current Location';
+      let name = "Current Location";
       try {
         const geo = API_KEY
-          ? await fetchJson(`${GEO}/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${API_KEY}`)
+          ? await fetchJson(
+              `${GEO}/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${API_KEY}`,
+            )
           : await bdcReverse(lat, lon);
         if (geo?.[0]?.name) {
           name = geo[0].name;
@@ -263,31 +349,31 @@ export const useGeolocation = () => {
 };
 
 export const useAQICategory = (aqi) => {
-  if (aqi >= 300) return 'hazardous';
-  if (aqi >= 250) return 'very-unhealthy';
-  if (aqi >= 200) return 'unhealthy';
-  if (aqi >= 150) return 'unhealthy-for-sensitive';
-  if (aqi >= 100) return 'moderate';
-  if (aqi >= 50) return 'good-for-sensitive';
-  return 'good';
+  if (aqi >= 300) return "hazardous";
+  if (aqi >= 250) return "very-unhealthy";
+  if (aqi >= 200) return "unhealthy";
+  if (aqi >= 150) return "unhealthy-for-sensitive";
+  if (aqi >= 100) return "moderate";
+  if (aqi >= 50) return "good-for-sensitive";
+  return "good";
 };
 
 export const useUVCategory = (uv) => {
-  if (uv >= 11) return 'extreme';
-  if (uv >= 8) return 'very-high';
-  if (uv >= 6) return 'high';
-  if (uv >= 3) return 'moderate';
-  return 'low';
+  if (uv >= 11) return "extreme";
+  if (uv >= 8) return "very-high";
+  if (uv >= 6) return "high";
+  if (uv >= 3) return "moderate";
+  return "low";
 };
 
 export const useAirQualityCategory = (aqi) => {
-  if (aqi >= 300) return 'hazardous';
-  if (aqi >= 250) return 'very-unhealthy';
-  if (aqi >= 200) return 'unhealthy';
-  if (aqi >= 150) return 'unhealthy-for-sensitive';
-  if (aqi >= 100) return 'moderate';
-  if (aqi >= 50) return 'good-for-sensitive';
-  return 'good';
+  if (aqi >= 300) return "hazardous";
+  if (aqi >= 250) return "very-unhealthy";
+  if (aqi >= 200) return "unhealthy";
+  if (aqi >= 150) return "unhealthy-for-sensitive";
+  if (aqi >= 100) return "moderate";
+  if (aqi >= 50) return "good-for-sensitive";
+  return "good";
 };
 
 export const useLocationSearch = () => {
@@ -296,8 +382,9 @@ export const useLocationSearch = () => {
 
   const fetchLocation = async (query) => {
     const result = await withFallback(
-      () => `${GEO}/direct?q=${encodeURIComponent(query)}&limit=1&appid=${API_KEY}`,
-      () => openMeteoGeocode(query)
+      () =>
+        `${GEO}/direct?q=${encodeURIComponent(query)}&limit=1&appid=${API_KEY}`,
+      () => openMeteoGeocode(query),
     )();
     return result[0];
   };
@@ -310,10 +397,10 @@ export const useLocationSearch = () => {
           name: data.name,
           lat: data.lat,
           lon: data.lon,
-          country: data.country || '',
+          country: data.country || "",
         });
-        queryClient.invalidateQueries(['weather']);
-        queryClient.invalidateQueries(['forecast']);
+        queryClient.invalidateQueries(["weather"]);
+        queryClient.invalidateQueries(["forecast"]);
       }
     },
   });
@@ -329,11 +416,11 @@ export const useWeatherIntensification = () => {
   const alerts = oneCall.alerts || [];
 
   if (alerts.length > 0) {
-    alerts.forEach(alert => {
+    alerts.forEach((alert) => {
       insights.push({
-        type: 'severe-weather',
+        type: "severe-weather",
         event: alert.event,
-        severity: alert.severity || 'warning',
+        severity: alert.severity || "warning",
         message: alert.description,
         timestamp: new Date(alert.start * 1000).getTime(),
       });
@@ -346,13 +433,15 @@ export const useWeatherIntensification = () => {
 
   if (Math.abs(tempChange) > 10) {
     insights.push({
-      type: 'temperature',
+      type: "temperature",
       change: Math.round(tempChange),
-      message: tempChange > 0 ? 'Rapid warming trend' : 'Cooling trend approaching',
-      recommendation: tempChange > 0
-        ? 'Stay hydrated and wear light clothing'
-        : 'Layer up with warm clothing',
-      icon: tempChange > 0 ? '🔥' : '❄️'
+      message:
+        tempChange > 0 ? "Rapid warming trend" : "Cooling trend approaching",
+      recommendation:
+        tempChange > 0
+          ? "Stay hydrated and wear light clothing"
+          : "Layer up with warm clothing",
+      icon: tempChange > 0 ? "🔥" : "❄️",
     });
   }
 
@@ -360,15 +449,15 @@ export const useWeatherIntensification = () => {
 
   if (windSpeed > 10) {
     insights.push({
-      type: 'wind',
-      severity: 'warning',
-      message: 'Strong winds detected',
-      recommendation: 'Secure loose outdoor objects',
-      icon: '💨'
+      type: "wind",
+      severity: "warning",
+      message: "Strong winds detected",
+      recommendation: "Secure loose outdoor objects",
+      icon: "💨",
     });
   }
 
-  queryClient.setQueryData(['weatherIntel'], insights);
+  queryClient.setQueryData(["weatherIntel"], insights);
 
   return insights;
 };
@@ -380,9 +469,11 @@ export const useWeatherAdaptations = () => {
   useEffect(() => {
     if (!insights || insights.length === 0) return;
 
-    insights.forEach(insight => {
-      if (insight.severity === 'hazardous' || insight.severity === 'warning') {
-        setError(`${insight.event || insight.message} — ${insight.recommendation || ''}`);
+    insights.forEach((insight) => {
+      if (insight.severity === "hazardous" || insight.severity === "warning") {
+        setError(
+          `${insight.event || insight.message} — ${insight.recommendation || ""}`,
+        );
       }
     });
   }, [insights, setError]);

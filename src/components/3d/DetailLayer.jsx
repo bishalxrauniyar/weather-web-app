@@ -22,10 +22,10 @@ export default function DetailLayer() {
   const isDaytime = useWeatherStore((s) => s.isDaytime);
   const [texture, setTexture] = useState(null);
   const matRef = useRef();
-  const prevTexRef = useRef(null);
   const fadeAlphaRef = useRef(0);
   const lastKey = useRef('');
   const lastFetch = useRef(0);
+  const inFlightRef = useRef(false);
   const stackRef = useRef([]);
   const mosaicRef = useRef(null);
   const genRef = useRef(0);
@@ -39,6 +39,13 @@ export default function DetailLayer() {
     document.body.appendChild(el);
     return () => el.remove();
   }, []);
+
+  useEffect(
+    () => () => {
+      if (mosaicRef.current?.texture) mosaicRef.current.texture.dispose();
+    },
+    []
+  );
 
   /* Composite the alive patch stack into a fresh mosaic canvas centred on the
      aim point, sized so the deepest layer keeps its native sharpness. Returns
@@ -62,7 +69,12 @@ export default function DetailLayer() {
     let m = mosaicRef.current;
     if (!m) {
       const canvas = document.createElement('canvas');
-      m = mosaicRef.current = { canvas, ctx: canvas.getContext('2d') };
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      m = mosaicRef.current = { canvas, ctx: canvas.getContext('2d'), texture: tex };
     }
     if (m.canvas.width !== w || m.canvas.height !== h) {
       m.canvas.width = w;
@@ -78,11 +90,7 @@ export default function DetailLayer() {
       ctx.drawImage(L.canvas, x, y, pw, ph);
     }
 
-    const tex = new THREE.CanvasTexture(m.canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
+    const tex = m.texture;
     /* Map the mosaic onto its lat/lon window on the sphere's UVs. */
     const uMin = (lonLeft + 180) / 360;
     const uSpan = lonSpan / 360;
@@ -90,6 +98,7 @@ export default function DetailLayer() {
     const vSpan = (latTop - latBot) / 180;
     tex.repeat.set(1 / uSpan, 1 / vSpan);
     tex.offset.set(-uMin / uSpan, -vMin / vSpan);
+    tex.needsUpdate = true;
     return tex;
   };
 
@@ -114,6 +123,7 @@ export default function DetailLayer() {
        position (but NOT from band-crossings — those complete and stack). */
     if (b.panning && stackRef.current.length) {
       stackRef.current = [];
+      if (mosaicRef.current?.texture) mosaicRef.current.texture.dispose();
       mosaicRef.current = null;
       genRef.current++;
     }
@@ -127,6 +137,7 @@ export default function DetailLayer() {
     const lon = ((Math.round(b.lon / snap) * snap + 540) % 360) - 180;
     const key = `${z}|${lat}|${lon}`;
     if (key === lastKey.current) return;
+    if (inFlightRef.current) return;
 
     const now = performance.now();
     if (now - lastFetch.current < 250) return;
@@ -135,6 +146,7 @@ export default function DetailLayer() {
 
     const { gridX, gridY } = gridFor(z, b.g);
     const gen = genRef.current;
+    inFlightRef.current = true;
     loadDetailPatch({ lat, lon, z, gridX, gridY })
       .then((patch) => {
         if (gen !== genRef.current) return;
@@ -158,19 +170,20 @@ export default function DetailLayer() {
 
         const tex = rebuildMosaic(lat, lon, b.g);
         if (tex) {
-          if (prevTexRef.current) prevTexRef.current.dispose();
-          prevTexRef.current = texture;
           setTexture(tex);
         }
       })
       .catch(() => {
         /* Tile fetch failed — keep whatever mosaic we already had. */
         lastKey.current = '';
+      })
+      .finally(() => {
+        inFlightRef.current = false;
       });
   });
 
   return (
-    <mesh visible={!!texture}>
+    <mesh visible={!!texture} raycast={() => null}>
       <sphereGeometry args={[1.5075, 96, 96]} />
       <meshBasicMaterial
         ref={matRef}

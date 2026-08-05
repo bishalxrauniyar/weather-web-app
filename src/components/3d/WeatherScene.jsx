@@ -91,6 +91,44 @@ function CameraSystem() {
   return null;
 }
 
+function PerformanceAutoTune({ onDprCap }) {
+  const setPerformanceProfile = useWeatherStore((s) => s.setPerformanceProfile);
+  const accTime = useRef(0);
+  const accFrames = useRef(0);
+  const lastTier = useRef('high');
+
+  useFrame((_, delta) => {
+    accTime.current += delta;
+    accFrames.current += 1;
+    if (accTime.current < 1.6) return;
+
+    const fps = accFrames.current / accTime.current;
+    accTime.current = 0;
+    accFrames.current = 0;
+
+    let nextTier = 'high';
+    let multiplier = 1;
+    let dprCap = 2;
+    if (fps < 43) {
+      nextTier = 'low';
+      multiplier = 0.58;
+      dprCap = 1.25;
+    } else if (fps < 53) {
+      nextTier = 'medium';
+      multiplier = 0.78;
+      dprCap = 1.6;
+    }
+
+    if (lastTier.current !== nextTier) {
+      lastTier.current = nextTier;
+      setPerformanceProfile({ tier: nextTier, multiplier });
+      onDprCap(dprCap);
+    }
+  });
+
+  return null;
+}
+
 function Lighting() {
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
@@ -214,6 +252,7 @@ export default function WeatherScene() {
   /* If the GPU context is lost and can't restore itself, remount the
      canvas entirely so the scene comes back instead of staying blank. */
   const [ctxKey, setCtxKey] = useState(0);
+  const [dprCap, setDprCap] = useState(2);
   const lostAt = useRef(null);
   const rebootTimer = useRef(null);
 
@@ -224,7 +263,7 @@ export default function WeatherScene() {
       <Canvas
         key={ctxKey}
         camera={{ position: [0, 2, 13], fov: 50, near: 0.01, far: 150 }}
-        dpr={[1, 2]}
+        dpr={[1, dprCap]}
         gl={{
           antialias: true,
           alpha: true,
@@ -257,6 +296,7 @@ export default function WeatherScene() {
         }}
       >
         <SceneContent />
+        <PerformanceAutoTune onDprCap={setDprCap} />
         <CameraSystem />
       </Canvas>
     </div>

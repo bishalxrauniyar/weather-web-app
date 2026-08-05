@@ -428,6 +428,9 @@ export default function Globe() {
   const pinWorld = useRef(new THREE.Vector3());
   const loc = useWeatherStore((s) => s.location);
   const setLocation = useWeatherStore((s) => s.setLocation);
+  const setMapFocusLocked = useWeatherStore((s) => s.setMapFocusLocked);
+  const setCursorGeo = useWeatherStore((s) => s.setCursorGeo);
+  const debugHud = useWeatherStore((s) => s.debugHud);
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
   const earthTheme = useWeatherStore((s) => s.earthTheme);
@@ -471,6 +474,7 @@ export default function Globe() {
      double-click so we can suppress it without dropping fast different-spot
      clicks (those are deliberate moves and must never fall through). */
   const lastSel = useRef(null);
+  const lastCursorAt = useRef(0);
   const sunBase = useRef(new THREE.Vector3(0.5, 0.6, 0.6));
   const darkness = useRef(isDaytime ? 0 : 1);
 
@@ -633,7 +637,16 @@ export default function Globe() {
         if (cancelled) return;
         const lightsImg = (hiRes?.lights || lightsMap)?.image;
         const built = buildThemeTextures(img, lightsImg, countries);
-        if (!cancelled) setThemeTextures(built);
+        if (!cancelled) {
+          setThemeTextures((prev) => {
+            if (prev) {
+              prev.map?.dispose();
+              prev.night?.dispose();
+              prev.country?.dispose();
+            }
+            return built;
+          });
+        }
       } catch {
         /* keep satellite if processing fails */
       }
@@ -816,6 +829,50 @@ export default function Globe() {
       camTarget.current = { z: 10.5, y: 0 };
     }
   }, [detailsCollapsed]);
+
+  useEffect(() => {
+    setMapFocusLocked(focused && globeFocus.active);
+  }, [focused, setMapFocusLocked]);
+
+  useEffect(() => {
+    if (!debugHud) {
+      setCursorGeo(null);
+      return;
+    }
+    const el = gl.domElement;
+    const onMove = (e) => {
+      if (pointerDown.current || !rotateRef.current || !groupRef.current) return;
+      const now = performance.now();
+      if (now - lastCursorAt.current < 80) return;
+      lastCursorAt.current = now;
+
+      const rect = el.getBoundingClientRect();
+      const hoverNdc = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      camera.updateMatrixWorld();
+      rotateRef.current.updateWorldMatrix(true, false);
+      raycaster.setFromCamera(hoverNdc, camera);
+      const hits = raycaster.intersectObject(rotateRef.current, false);
+      if (!hits.length) {
+        setCursorGeo(null);
+        return;
+      }
+      const gp = groupRef.current.position;
+      const dir = hits[0].point.clone().sub(gp).normalize();
+      const latDeg = (Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)) * 180) / Math.PI;
+      const lonDeg = ((Math.atan2(dir.z, -dir.x) * 180) / Math.PI - 180 + 540) % 360 - 180;
+      setCursorGeo({ lat: Number(latDeg.toFixed(3)), lon: Number(lonDeg.toFixed(3)) });
+    };
+    const onLeave = () => setCursorGeo(null);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerleave', onLeave);
+    return () => {
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerleave', onLeave);
+    };
+  }, [debugHud, gl, camera, raycaster, setCursorGeo]);
 
   const selectFromClick = useCallback((event) => {
     /* Throttle only true double-clicks (same spot, ~400ms). Every OTHER
@@ -1280,6 +1337,9 @@ export default function Globe() {
             alpha mode isolates the weather data from each tile basemap:
             temp = pastel gradient (saturation), rain = dark basemap
             (luma), wind = light basemap (brightness). */}
+        {weatherLayers.clouds && (
+          <MapLayer layer="clouds_new" radius={1.507} opacity={earthTheme === 'night' ? 0.45 : 0.7} alphaMode="keep" />
+        )}
         {weatherLayers.temperature && (
           <MapLayer layer="temp_new" radius={1.507} opacity={earthTheme === 'night' ? 0.55 : 0.8} alphaMode="saturation" />
         )}
@@ -1288,6 +1348,9 @@ export default function Globe() {
         )}
         {weatherLayers.wind && (
           <MapLayer layer="wind_new" radius={1.507} opacity={earthTheme === 'night' ? 0.5 : 0.62} alphaMode="brightness" />
+        )}
+        {weatherLayers.pressure && (
+          <MapLayer layer="pressure_new" radius={1.507} opacity={earthTheme === 'night' ? 0.5 : 0.7} alphaMode="luma" />
         )}
 
         {/* Deep-zoom satellite detail — sharper tiles fade in while the

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import gsap from 'gsap';
 import {
@@ -7,6 +7,7 @@ import {
   useAlerts,
   useAQI,
   useGeolocation,
+  useWeatherByCoords,
 } from '../hooks/useWeather';
 import { useWeatherStore, sunDaytime } from '../store/weatherStore';
 import { toUnit, unitSymbol } from '../storage/weatherUtils';
@@ -33,7 +34,53 @@ const MAP_LAYERS = [
   { id: 'precipitation', label: 'Rain' },
   { id: 'temperature', label: 'Temp' },
   { id: 'wind', label: 'Wind' },
+  { id: 'pressure', label: 'Pressure' },
 ];
+
+function minsAgo(ts, nowMs) {
+  if (!ts) return null;
+  const mins = Math.max(0, Math.round((nowMs - ts) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}h${m ? ` ${m}m` : ''} ago`;
+}
+
+function severeTimeline(forecastData, units) {
+  const nowSec = Date.now() / 1000;
+  const list = (forecastData?.list || [])
+    .filter((i) => i?.dt && i.dt >= nowSec)
+    .slice(0, 6);
+  if (!list.length) return null;
+
+  let rainRisk = 0;
+  let maxWindKmh = 0;
+  let maxTemp = -Infinity;
+  let minTemp = Infinity;
+
+  for (const i of list) {
+    const pop = Number(i?.pop || 0);
+    const rainMm = Number(i?.rain?.['1h'] || i?.rain?.['3h'] || 0);
+    const windMs = Number(i?.wind?.speed || i?.wind_speed || 0);
+    const tempC = Number(i?.main?.temp ?? i?.temp ?? NaN);
+    rainRisk = Math.max(rainRisk, pop, rainMm > 0 ? Math.min(1, rainMm / 6) : 0);
+    maxWindKmh = Math.max(maxWindKmh, windMs * 3.6);
+    if (Number.isFinite(tempC)) {
+      maxTemp = Math.max(maxTemp, tempC);
+      minTemp = Math.min(minTemp, tempC);
+    }
+  }
+
+  const risk = rainRisk > 0.75 || maxWindKmh > 60 ? 'high' : rainRisk > 0.45 || maxWindKmh > 35 ? 'moderate' : 'low';
+  const tempSwing = Number.isFinite(maxTemp) && Number.isFinite(minTemp) ? Math.round(Math.abs(toUnit(maxTemp, units) - toUnit(minTemp, units))) : null;
+  return {
+    rainPct: Math.round(rainRisk * 100),
+    maxWindKmh: Math.round(maxWindKmh),
+    tempSwing,
+    risk,
+  };
+}
 
 const fmtAlertTime = (ts) => {
   if (!ts) return null;
@@ -139,6 +186,14 @@ export default function WeatherDashboard() {
     isDaytime,
     detailsCollapsed,
     setDetailsCollapsed,
+    performanceTier,
+    mapFocusLocked,
+    debugHud,
+    toggleDebugHud,
+    cursorGeo,
+    lastWeatherAt,
+    networkOnline,
+    setNetworkOnline,
   } = useWeatherStore();
   const {
     data: weatherData,
@@ -155,6 +210,9 @@ export default function WeatherDashboard() {
   const [dismissedAlerts, setDismissedAlerts] = useState(() => new Set());
   const [offsetH, setOffsetH] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  const [compareName, setCompareName] = useState('');
+  const simTween = useRef({ at: Date.now() });
 
   /* Time travel: slide through the next 48h — the simulated clock drives
      the globe's day/night terminator, sun position and aurora visibility. */
@@ -163,9 +221,21 @@ export default function WeatherDashboard() {
       setSimulatedAt(null);
       return;
     }
-    const at = Date.now() + offsetH * 3600e3;
-    setSimulatedAt(at);
-    setDaytime(sunDaytime(location.lat, location.lon, at));
+    const target = Date.now() + offsetH * 3600e3;
+    const reduce =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const tween = gsap.to(simTween.current, {
+      at: target,
+      duration: reduce ? 0.001 : 0.45,
+      ease: 'power2.out',
+      onUpdate: () => {
+        const at = Math.round(simTween.current.at);
+        setSimulatedAt(at);
+        setDaytime(sunDaytime(location.lat, location.lon, at));
+      },
+    });
+    return () => tween.kill();
   }, [offsetH, location?.lat, location?.lon, setSimulatedAt, setDaytime]);
 
   /* Deep links: open /?lat=&lon= to fly straight to a shared place. */
@@ -212,6 +282,22 @@ export default function WeatherDashboard() {
     if (aqi) setAirQuality(aqi);
   }, [aqi, setAirQuality]);
 
+  useEffect(() => {
+    const t = setInterval(() => setClockTick(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => setNetworkOnline(true);
+    const onOffline = () => setNetworkOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [setNetworkOnline]);
+
   const temp = weather?.main?.temp != null ? weather.main.temp : null;
   const feels = weather?.main?.feels_like != null ? weather.main.feels_like : null;
   const cond = weather?.weather?.[0]?.description || '—';
@@ -221,6 +307,24 @@ export default function WeatherDashboard() {
   );
   const aqiValue = aqi?.list?.[0]?.main?.aqi;
   const dataSource = weather?._source || forecastData?._source || aqi?._source;
+  const weatherAge = minsAgo(lastWeatherAt, clockTick);
+  const severe6h = useMemo(() => severeTimeline(forecastData, units), [forecastData, units]);
+  const compareChoices = useMemo(
+    () =>
+      favorites
+        .filter((f) => f.lat != null && f.lon != null && f.name !== location?.name)
+        .map((f) => ({ name: f.name, lat: f.lat, lon: f.lon })),
+    [favorites, location?.name]
+  );
+  const compareLoc = useMemo(
+    () => compareChoices.find((c) => c.name === compareName) || compareChoices[0] || null,
+    [compareChoices, compareName]
+  );
+  const { data: compareWeather } = useWeatherByCoords(compareLoc?.lat, compareLoc?.lon);
+  const compareTemp = compareWeather?.main?.temp != null ? toUnit(compareWeather.main.temp, units) : null;
+  const currentTemp = weather?.main?.temp != null ? toUnit(weather.main.temp, units) : null;
+  const deltaTemp =
+    compareTemp != null && currentTemp != null ? compareTemp - currentTemp : null;
 
   return (
     <div className={`app-shell wx-${weatherType || 'clear'}${detailsCollapsed ? ' rail-collapsed' : ''}`}>
@@ -302,6 +406,17 @@ export default function WeatherDashboard() {
                 )}
               </button>
               <EarthThemePicker />
+              <button
+                className={`icon-btn ${debugHud ? 'bg-white/15 text-white' : ''}`}
+                aria-label="Toggle map debug HUD"
+                title="Toggle map debug HUD"
+                onClick={toggleDebugHud}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 3h4.5l.6 1.8a1 1 0 00.95.7h2.2a1 1 0 011 1V19a1 1 0 01-1 1H5a1 1 0 01-1-1V6.5a1 1 0 011-1h2.2a1 1 0 00.95-.7L9.75 3z" />
+                  <circle cx="12" cy="13" r="3.25" strokeWidth={1.5} />
+                </svg>
+              </button>
               <div
                 className="flex items-center rounded-full border border-white/10 p-0.5 text-[11px] tabular-nums"
                 role="group"
@@ -351,6 +466,34 @@ export default function WeatherDashboard() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {!networkOnline && (
+          <div
+            className="mb-3 flex items-center justify-between gap-3 px-4 py-3 rounded-2xl"
+            style={{ background: 'rgba(251,146,60,0.11)', border: '1px solid rgba(251,146,60,0.35)' }}
+          >
+            <span className="text-xs text-orange-100/90 min-w-0 truncate">
+              You are offline. Showing last known weather snapshot.
+            </span>
+          </div>
+        )}
+
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">
+          <span className="px-2.5 py-1 rounded-full border border-white/15 text-white/75 bg-white/5">
+            Render: {performanceTier}
+          </span>
+          <span className={`px-2.5 py-1 rounded-full border ${mapFocusLocked ? 'border-cyan-300/40 text-cyan-200 bg-cyan-400/10' : 'border-white/15 text-white/60 bg-white/5'}`}>
+            {mapFocusLocked ? 'Pin lock on' : 'Free globe'}
+          </span>
+          {weatherAge && (
+            <span className="px-2.5 py-1 rounded-full border border-white/15 text-white/60 bg-white/5">
+              Updated {weatherAge}
+            </span>
+          )}
+          <span className={`px-2.5 py-1 rounded-full border ${networkOnline ? 'border-emerald-300/35 text-emerald-200 bg-emerald-400/10' : 'border-orange-300/35 text-orange-200 bg-orange-400/10'}`}>
+            {networkOnline ? 'Online' : 'Offline'}
+          </span>
+        </div>
 
         {/* Weather alerts — severity-styled, individually dismissible */}
         <AnimatePresence>
@@ -475,7 +618,7 @@ export default function WeatherDashboard() {
             type="range"
             min={0}
             max={48}
-            step={1}
+            step={0.25}
             value={offsetH}
             onChange={(e) => setOffsetH(Number(e.target.value))}
             className="w-full h-1.5"
@@ -506,6 +649,99 @@ export default function WeatherDashboard() {
           )}
         </div>
 
+        {compareChoices.length > 0 && (
+          <div
+            className="mb-3 px-4 py-3 rounded-2xl"
+            style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
+          >
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.13em] text-white/35">
+                Compare cities
+              </span>
+              <select
+                className="text-[11px] bg-white/8 border border-white/15 rounded-lg px-2 py-1 text-white"
+                value={compareLoc?.name || ''}
+                onChange={(e) => setCompareName(e.target.value)}
+              >
+                {compareChoices.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[11px]">
+              <div className="rounded-xl px-2.5 py-2 bg-white/5 border border-white/10">
+                <div className="text-white/45">{location?.name || 'Current'}</div>
+                <div className="text-white text-base mt-0.5">
+                  {currentTemp != null ? `${currentTemp}${unitSymbol(units)}` : '—'}
+                </div>
+                <div className="text-white/45">
+                  Wind {weather?.wind?.speed != null ? `${Math.round(weather.wind.speed * 3.6)} km/h` : '—'}
+                </div>
+              </div>
+              <div className="rounded-xl px-2.5 py-2 bg-white/5 border border-white/10">
+                <div className="text-white/45">{compareLoc?.name || 'Compare'}</div>
+                <div className="text-white text-base mt-0.5">
+                  {compareTemp != null ? `${compareTemp}${unitSymbol(units)}` : '—'}
+                </div>
+                <div className="text-white/45">
+                  Wind {compareWeather?.wind?.speed != null ? `${Math.round(compareWeather.wind.speed * 3.6)} km/h` : '—'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-2 text-[11px] text-white/65">
+              Temp delta:{' '}
+              <span className={deltaTemp == null ? '' : deltaTemp > 0 ? 'text-orange-200' : deltaTemp < 0 ? 'text-cyan-200' : 'text-white/75'}>
+                {deltaTemp == null ? '—' : `${deltaTemp > 0 ? '+' : ''}${deltaTemp}${unitSymbol(units)}`}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {severe6h && (
+          <div
+            className="mb-3 px-4 py-3 rounded-2xl"
+            style={{
+              background:
+                severe6h.risk === 'high'
+                  ? 'rgba(248,113,113,0.11)'
+                  : severe6h.risk === 'moderate'
+                    ? 'rgba(251,146,60,0.1)'
+                    : 'rgba(59,130,246,0.09)',
+              border:
+                severe6h.risk === 'high'
+                  ? '1px solid rgba(248,113,113,0.35)'
+                  : severe6h.risk === 'moderate'
+                    ? '1px solid rgba(251,146,60,0.3)'
+                    : '1px solid rgba(59,130,246,0.25)',
+            }}
+          >
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.13em] text-white/40">
+                Next 6h risk
+              </span>
+              <span className="text-[10px] text-white/60">{severe6h.risk}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-xl px-2 py-2 bg-white/5 border border-white/10">
+                <div className="text-[10px] text-white/40">Rain</div>
+                <div className="text-sm text-white">{severe6h.rainPct}%</div>
+              </div>
+              <div className="rounded-xl px-2 py-2 bg-white/5 border border-white/10">
+                <div className="text-[10px] text-white/40">Wind</div>
+                <div className="text-sm text-white">{severe6h.maxWindKmh} km/h</div>
+              </div>
+              <div className="rounded-xl px-2 py-2 bg-white/5 border border-white/10">
+                <div className="text-[10px] text-white/40">Swing</div>
+                <div className="text-sm text-white">
+                  {severe6h.tempSwing != null ? `${severe6h.tempSwing}${unitSymbol(units)}` : '—'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Location hero */}
         <section>
           <div className="loc-name">
@@ -525,6 +761,18 @@ export default function WeatherDashboard() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                 </svg>
                 Open-Meteo
+              </span>
+            )}
+            {weather?._stale && (
+              <span
+                className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium text-amber-200/90"
+                style={{
+                  background: 'rgba(251,191,36,0.12)',
+                  border: '1px solid rgba(251,191,36,0.35)',
+                }}
+                title="Using cached weather while refreshing in background"
+              >
+                Cached
               </span>
             )}
             {aqiValue && AQI_LABELS[aqiValue] && (
@@ -599,6 +847,37 @@ export default function WeatherDashboard() {
         </section>
 
         <TravelBoard />
+
+        {debugHud && (
+          <div
+            className="mb-3 px-4 py-3 rounded-2xl text-[11px]"
+            style={{ background: 'rgba(10,18,36,0.58)', border: '1px solid rgba(125,211,252,0.35)' }}
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-[0.13em] text-cyan-200/80 mb-2">
+              Map debug
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-cyan-50/85">
+              <div>
+                Cursor lat: {cursorGeo?.lat != null ? cursorGeo.lat.toFixed(3) : '—'}
+              </div>
+              <div>
+                Cursor lon: {cursorGeo?.lon != null ? cursorGeo.lon.toFixed(3) : '—'}
+              </div>
+              <div>
+                Pin lat: {location?.lat != null ? Number(location.lat).toFixed(3) : '—'}
+              </div>
+              <div>
+                Pin lon: {location?.lon != null ? Number(location.lon).toFixed(3) : '—'}
+              </div>
+              <div>
+                Focus: {mapFocusLocked ? 'locked' : 'free'}
+              </div>
+              <div>
+                Source: {dataSource || 'unknown'}
+              </div>
+            </div>
+          </div>
+        )}
 
         <p className="text-[11px] text-white/25 text-center leading-relaxed pb-2">
           Drag to spin · scroll to zoom · search or click a country to fly there

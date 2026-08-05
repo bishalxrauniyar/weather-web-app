@@ -29,6 +29,13 @@ export default function MapLayer({ layer, radius, opacity, alphaMode = 'keep' })
     return tex;
   }, [image]);
 
+  useEffect(
+    () => () => {
+      if (texture) texture.dispose();
+    },
+    [texture]
+  );
+
   if (!texture || failed) return null;
 
   return (

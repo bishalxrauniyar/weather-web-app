@@ -288,17 +288,19 @@ export default function Particles() {
   const weatherType = useWeatherStore((s) => s.weatherType);
   const isDaytime = useWeatherStore((s) => s.isDaytime);
   const density = useWeatherStore((s) => s.particleDensity);
+  const perf = useWeatherStore((s) => s.performanceMultiplier);
+  const adaptiveDensity = Math.max(0.35, density * perf);
 
   const show = !isDaytime && (weatherType === 'clear' || weatherType === 'night');
 
   return (
     <group>
-      {(weatherType === 'rain' || weatherType === 'drizzle' || weatherType === 'thunderstorm') && <Rain density={density} />}
-      {weatherType === 'snow' && <Snow density={density} />}
-      {weatherType === 'mist' && <Mist density={density} />}
+      {(weatherType === 'rain' || weatherType === 'drizzle' || weatherType === 'thunderstorm') && <Rain density={adaptiveDensity} />}
+      {weatherType === 'snow' && <Snow density={adaptiveDensity} />}
+      {weatherType === 'mist' && <Mist density={adaptiveDensity} />}
       {(weatherType === 'clear' || weatherType === 'partly-cloudy' || weatherType === 'cloudy') && <Dust />}
       {show && <Fireflies />}
-      {(weatherType === 'thunderstorm' || weatherType === 'rain') && <Leaves density={density} />}
+      {(weatherType === 'thunderstorm' || weatherType === 'rain') && <Leaves density={adaptiveDensity} />}
     </group>
   );
 }

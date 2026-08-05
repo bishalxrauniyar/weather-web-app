@@ -6,7 +6,7 @@
    distance, so the deeper you zoom the sharper the map gets. */
 
 const TILE_BASE =
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile";
 
 /* z/x/y → Image promise; a simple FIFO cap keeps memory in check. */
 const tileCache = new Map();
@@ -32,7 +32,7 @@ function fetchTile(z, x, y) {
           img.src = URL.createObjectURL(blob);
           img.onload = () => resolve(img);
           img.onerror = reject;
-        })
+        }),
     )
     .catch((e) => {
       tileCache.delete(key);
@@ -50,7 +50,10 @@ function fetchTile(z, x, y) {
 }
 
 function latToMercY(lat) {
-  return 0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI);
+  return (
+    0.5 -
+    Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)
+  );
 }
 
 function mercYToLat(y) {
@@ -64,6 +67,13 @@ const smoothstep = (e0, e1, x) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
 };
+
+export function lonToPatchX(lon, lonLeft, lonRight, width) {
+  if (!Number.isFinite(width) || width <= 0) return 0;
+  const span = lonRight - lonLeft;
+  if (!Number.isFinite(span) || Math.abs(span) < 1e-9) return 0;
+  return ((lon - lonLeft) / span) * width - 0.5;
+}
 
 /* Zoom level for a given camera gap (distance from the surface, world units):
    deeper = more zoom = higher tile zoom. */
@@ -81,7 +91,7 @@ export function zoomForGap(g) {
    it (roughly) covers what the user sees instead of leaving a blurry ring. */
 export function visibleSpanDeg(g) {
   const aspect =
-    typeof window !== 'undefined' && window.innerHeight > 0
+    typeof window !== "undefined" && window.innerHeight > 0
       ? window.innerWidth / window.innerHeight
       : 16 / 9;
   const halfH = Math.atan(Math.tan((25 * Math.PI) / 180) * aspect);
@@ -110,7 +120,7 @@ export async function loadDetailPatch({ lat, lon, z, gridX = 12, gridY = 7 }) {
   const n = Math.pow(2, z);
   const cx = Math.floor(((lon + 180) / 360) * n);
   const cy = Math.floor(latToMercY(clamp(lat, -84, 84)) * n);
-  const x0 = ((cx - (gridX >> 1)) % n + n) % n;
+  const x0 = (((cx - (gridX >> 1)) % n) + n) % n;
   const y0 = clamp(cy - (gridY >> 1), 0, n - gridY);
 
   const rows = [];
@@ -125,10 +135,10 @@ export async function loadDetailPatch({ lat, lon, z, gridX = 12, gridY = 7 }) {
 
   const sw = gridX * 256;
   const sh = gridY * 256;
-  const merc = document.createElement('canvas');
+  const merc = document.createElement("canvas");
   merc.width = sw;
   merc.height = sh;
-  const mctx = merc.getContext('2d');
+  const mctx = merc.getContext("2d", { willReadFrequently: true });
   for (let gy = 0; gy < gridY; gy++) {
     for (let gx = 0; gx < gridX; gx++) {
       mctx.drawImage(tileRows[gy][gx], gx * 256, gy * 256);
@@ -142,11 +152,14 @@ export async function loadDetailPatch({ lat, lon, z, gridX = 12, gridY = 7 }) {
 
   /* Re-project mercator → equirect for this lat/lon window (bilinear). */
   const w = sw;
-  const h = Math.max(64, Math.round((w * (latTop - latBot)) / (lonRight - lonLeft)));
-  const out = document.createElement('canvas');
+  const h = Math.max(
+    64,
+    Math.round((w * (latTop - latBot)) / (lonRight - lonLeft)),
+  );
+  const out = document.createElement("canvas");
   out.width = w;
   out.height = h;
-  const octx = out.getContext('2d');
+  const octx = out.getContext("2d", { willReadFrequently: true });
   const src = mctx.getImageData(0, 0, sw, sh);
   const s = src.data;
   const dst = new ImageData(w, h);
@@ -160,8 +173,6 @@ export async function loadDetailPatch({ lat, lon, z, gridX = 12, gridY = 7 }) {
     srcRows[y] = ((latToMercY(lat) - yTopM) / ySpanM) * sh - 0.5;
   }
 
-  const pxPerDeg = (n * 256) / 360;
-  const xOff = x0 * 256 - (lonLeft + 180) * pxPerDeg;
   const wc = w / 2;
   const hc = h / 2;
 
@@ -172,30 +183,47 @@ export async function loadDetailPatch({ lat, lon, z, gridX = 12, gridY = 7 }) {
     const rowOff = y * w;
     for (let x = 0; x < w; x++) {
       const lon = lonLeft + ((x + 0.5) / w) * (lonRight - lonLeft);
-      const fx = clamp(lon * pxPerDeg + xOff, 0, sw - 1.001);
+      const fx = clamp(lonToPatchX(lon, lonLeft, lonRight, sw), 0, sw - 1.001);
       const x0i = Math.floor(fx);
       const xf = fx - x0i;
       const i00 = (y0i * sw + x0i) * 4;
       const i10 = (y0i * sw + clamp(x0i + 1, 0, sw - 1)) * 4;
       const i01 = (clamp(y0i + 1, 0, sh - 1) * sw + x0i) * 4;
-      const i11 = (clamp(y0i + 1, 0, sh - 1) * sw + clamp(x0i + 1, 0, sw - 1)) * 4;
+      const i11 =
+        (clamp(y0i + 1, 0, sh - 1) * sw + clamp(x0i + 1, 0, sw - 1)) * 4;
 
-      let r = s[i00] * (1 - xf) * (1 - yf) + s[i10] * xf * (1 - yf) + s[i01] * (1 - xf) * yf + s[i11] * xf * yf;
-      let g = s[i00 + 1] * (1 - xf) * (1 - yf) + s[i10 + 1] * xf * (1 - yf) + s[i01 + 1] * (1 - xf) * yf + s[i11 + 1] * xf * yf;
-      let b = s[i00 + 2] * (1 - xf) * (1 - yf) + s[i10 + 2] * xf * (1 - yf) + s[i01 + 2] * (1 - xf) * yf + s[i11 + 2] * xf * yf;
-      let a = s[i00 + 3] * (1 - xf) * (1 - yf) + s[i10 + 3] * xf * (1 - yf) + s[i01 + 3] * (1 - xf) * yf + s[i11 + 3] * xf * yf;
+      let r =
+        s[i00] * (1 - xf) * (1 - yf) +
+        s[i10] * xf * (1 - yf) +
+        s[i01] * (1 - xf) * yf +
+        s[i11] * xf * yf;
+      let g =
+        s[i00 + 1] * (1 - xf) * (1 - yf) +
+        s[i10 + 1] * xf * (1 - yf) +
+        s[i01 + 1] * (1 - xf) * yf +
+        s[i11 + 1] * xf * yf;
+      let b =
+        s[i00 + 2] * (1 - xf) * (1 - yf) +
+        s[i10 + 2] * xf * (1 - yf) +
+        s[i01 + 2] * (1 - xf) * yf +
+        s[i11 + 2] * xf * yf;
+      let a =
+        s[i00 + 3] * (1 - xf) * (1 - yf) +
+        s[i10 + 3] * xf * (1 - yf) +
+        s[i01 + 3] * (1 - xf) * yf +
+        s[i11 + 3] * xf * yf;
 
-/* Adaptive elliptical fade — tighter at high zoom, wider at low zoom
+      /* Adaptive elliptical fade — tighter at high zoom, wider at low zoom
      to prevent visible seams. Uses smoothstep for C1 continuity. The
      ring is generous because patches are composited into a stack, so
      the fade edge melts into the next layer instead of the base map. */
-  const zoomProgress = Math.min(1, Math.max(0, (9 - z) / 4));
-  const fadeInner = 0.55 + 0.2 * zoomProgress;
-  const fadeOuter = 0.95 + 0.04 * zoomProgress;
-  const rx = (x - wc) / wc;
-  const ry = (y - hc) / hc;
-  const rad = Math.sqrt(rx * rx + ry * ry);
-  a *= 1 - smoothstep(fadeInner, fadeOuter, rad);
+      const zoomProgress = Math.min(1, Math.max(0, (9 - z) / 4));
+      const fadeInner = 0.55 + 0.2 * zoomProgress;
+      const fadeOuter = 0.95 + 0.04 * zoomProgress;
+      const rx = (x - wc) / wc;
+      const ry = (y - hc) / hc;
+      const rad = Math.sqrt(rx * rx + ry * ry);
+      a *= 1 - smoothstep(fadeInner, fadeOuter, rad);
 
       const o = (rowOff + x) * 4;
       d[o] = r;
@@ -207,12 +235,16 @@ export async function loadDetailPatch({ lat, lon, z, gridX = 12, gridY = 7 }) {
 
   octx.putImageData(dst, 0, 0);
 
-  /* Cap the patch canvas so a deep-zoom stack of 4 layers stays light. */
-  if (out.width > 2048) {
-    const scaled = document.createElement('canvas');
-    scaled.width = 2048;
-    scaled.height = Math.max(1, Math.round((out.height * 2048) / out.width));
-    scaled.getContext('2d').drawImage(out, 0, 0, scaled.width, scaled.height);
+  /* Keep deeper bands sharper while still capping upload cost. */
+  const maxPatchWidth = z >= 8 ? 3072 : 2048;
+  if (out.width > maxPatchWidth) {
+    const scaled = document.createElement("canvas");
+    scaled.width = maxPatchWidth;
+    scaled.height = Math.max(
+      1,
+      Math.round((out.height * maxPatchWidth) / out.width),
+    );
+    scaled.getContext("2d").drawImage(out, 0, 0, scaled.width, scaled.height);
     return { canvas: scaled, latTop, latBot, lonLeft, lonRight };
   }
   return { canvas: out, latTop, latBot, lonLeft, lonRight };
