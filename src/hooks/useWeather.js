@@ -131,6 +131,25 @@ export const useCurrentWeather = () => {
   });
 };
 
+/* Fallback hourly feed when only 3-hour blocks exist: spread each block's
+   rain over its three hours so the per-hour graphs still render. */
+function hourlyFrom3h(list) {
+  const out = [];
+  list.forEach((i) => {
+    const rain = i.rain?.['3h'] ?? i.rain?.['1h'] ?? 0;
+    const pop = i.pop || 0;
+    for (let k = 0; k < 3; k++) {
+      out.push({
+        dt: i.dt + k * 3600,
+        rain: rain / 3,
+        pop,
+        temp: i.main?.temp ?? null,
+      });
+    }
+  });
+  return out;
+}
+
 /* Ten-day forecast. OpenWeather only serves 5 days (3h blocks), so the
    Open-Meteo feed backfills days 6-10 — the list is always ~10 days and
    every day keeps the same 3-hourly shape the UI expects. With no API key
@@ -166,11 +185,14 @@ export const useForecast = () => {
           return {
             ...owm,
             list: [...owm.list, ...extra],
+            /* Per-hour rain: Open-Meteo's real hourly feed covers all 10
+               days. When it's down, spread each 3h block over its hours. */
+            _hourly: om._hourly || hourlyFrom3h(owm.list),
             alerts: om.alerts?.length ? om.alerts : owm.alerts,
             _source: 'open-weather',
           };
         }
-        return owm;
+        return { ...owm, _hourly: hourlyFrom3h(owm.list) };
       } catch {
         if (om) return om;
         throw new Error('Weather service unavailable');

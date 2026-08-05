@@ -2,7 +2,7 @@ import { useRef, useMemo, useEffect, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useWeatherStore } from '../../store/weatherStore';
-import Globe, { globeFocus, sunBus } from './Globe';
+import Globe, { globeFocus, sunBus, camAnchor } from './Globe';
 import Particles from './Particles';
 import Sky from './Sky';
 import Aurora from './Aurora';
@@ -64,6 +64,12 @@ function CameraSystem() {
       camera.lookAt(globeFocus.pinX, globeFocus.pinY, globeFocus.pinZ);
       return;
     }
+
+    /* While the cursor-anchored wheel zoom is active, the anchor owns the
+       camera — the idle drift must not fight the user's zoom-in (it was
+       pushing the camera back out and stalling deep zooms). The anchor is
+       released on click/drag/arrow/focus, so this yields only mid-wheel. */
+    if (camAnchor.active) return;
 
     const tx = target.current.x * 1.8 + Math.sin(clock.elapsedTime * 0.01) * 0.2;
     /* ty=3 + aim 0 puts the globe dead-centre (projected NDC y ≈ 0) in map

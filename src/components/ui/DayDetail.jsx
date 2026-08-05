@@ -11,7 +11,7 @@ import {
 /* Per-day summary computed from the day's 3-hour forecast blocks. Every
    figure the modal shows is derived here so the rail row and the modal
    always agree. */
-function summarizeDay(items) {
+function summarizeDay(items, day) {
   const temps = items.map((i) => i.main?.temp).filter((v) => v != null);
   const pops = items.map((i) => i.pop || 0);
   const rains = items.map((i) => i.rain?.['3h'] ?? i.rain?.['1h'] ?? 0);
@@ -20,6 +20,17 @@ function summarizeDay(items) {
   const hums = items.map((i) => i.main?.humidity ?? 0);
   const vis = items.map((i) => i.visibility ?? 0);
   const clouds = items.map((i) => i.clouds?.all ?? 0);
+
+  /* Per-hour rain feed for the day (24 entries when available). */
+  const rainHours = day?.rainHours?.length
+    ? day.rainHours
+    : rains.map((r, i) => ({
+        dt: items[i]?.dt,
+        rain: items[i]?.rain?.['3h'] ? r / 3 : r,
+        pop: items[i]?.pop || 0,
+      }));
+  const rainTotal = rainHours.reduce((a, h) => a + h.rain, 0);
+  const rainPeak = Math.max(...rainHours.map((h) => h.rain), 0);
 
   const tally = new Map();
   items.forEach((i) => {
@@ -40,6 +51,9 @@ function summarizeDay(items) {
     max: temps.length ? Math.max(...temps) : null,
     pop: Math.round(Math.max(...pops) * 100),
     rain: rains.reduce((a, b) => a + b, 0),
+    rainHours,
+    rainTotal,
+    rainPeak,
     windMax: winds.length ? Math.max(...winds) : null,
     windGust: gusts.length ? Math.max(...gusts) : null,
     windDeg: windIdx >= 0 ? items[windIdx].wind?.deg : null,
@@ -96,6 +110,66 @@ function StatCard({ icon, label, value }) {
   );
 }
 
+/* Hourly rain bar chart for the selected day. Every bar is the mm/h at that
+   hour; hover any bar for the exact figure. */
+function RainChart({ hours }) {
+  const max = Math.max(...hours.map((h) => h.rain), 0.01);
+  const W = 640;
+  const H = 104;
+  const PAD = 8;
+  const n = Math.max(hours.length, 1);
+  const bw = (W - PAD * 2) / n;
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H + 22}`}
+      className="rain-chart w-full"
+      role="img"
+      aria-label="Rain by hour"
+      preserveAspectRatio="none"
+    >
+      <defs>
+        <linearGradient id="rainGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#7ee8ff" />
+          <stop offset="100%" stopColor="rgba(42,127,255,0.55)" />
+        </linearGradient>
+      </defs>
+      <line x1={PAD} y1={H + 0.5} x2={W - PAD} y2={H + 0.5} stroke="rgba(255,255,255,0.14)" />
+      {hours.map((h, i) => {
+        const bh = (h.rain / max) * (H - 6);
+        const x = PAD + i * bw;
+        const d = new Date(h.dt * 1000);
+        const label = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        return (
+          <g key={h.dt}>
+            <rect
+              x={x + 1}
+              y={H - bh}
+              width={Math.max(2, bw - 2)}
+              height={Math.max(bh, 1)}
+              rx={1.5}
+              fill="url(#rainGrad)"
+              className="rain-chart-bar"
+            >
+              <title>{`${label} — ${h.rain.toFixed(1)} mm`}</title>
+            </rect>
+            {(i % 3 === 0 || i === n - 1) && (
+              <text
+                x={x + bw / 2}
+                y={H + 15}
+                textAnchor="middle"
+                className="rain-chart-tick"
+              >
+                {d.toLocaleTimeString('en-US', { hour: 'numeric' })}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function DayDetail({ isOpen, onClose, day, weather, units }) {
   useEffect(() => {
     const handleEsc = (e) => {
@@ -111,7 +185,7 @@ export default function DayDetail({ isOpen, onClose, day, weather, units }) {
     };
   }, [isOpen, onClose]);
 
-  const data = useMemo(() => (day?.items?.length ? summarizeDay(day.items) : null), [day]);
+  const data = useMemo(() => (day?.items?.length ? summarizeDay(day.items, day) : null), [day]);
 
   const t = (c) => (c == null ? '—' : `${Math.round(toUnit(c, units))}${unitSymbol(units)}`);
   const windTxt = (mps) =>
@@ -264,6 +338,30 @@ export default function DayDetail({ isOpen, onClose, day, weather, units }) {
                     })}
                   </div>
                 </div>
+              )}
+
+              {/* Rain by hour — bar chart across the full day */}
+              {data.rainHours && data.rainHours.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+                  className="px-8 mt-6"
+                >
+                  <div className="flex items-baseline justify-between mb-2.5">
+                    <span className="label-text">Rain by hour</span>
+                    <span className="text-[11px] text-white/40">
+                      {data.rainTotal > 0
+                        ? `${data.rainTotal.toFixed(1)} mm total · peak ${data.rainPeak.toFixed(1)} mm`
+                        : 'No rain expected'}
+                    </span>
+                  </div>
+                  {data.rainTotal > 0 ? (
+                    <RainChart hours={data.rainHours} />
+                  ) : (
+                    <div className="rain-chart-empty">A dry day — nothing to watch for.</div>
+                  )}
+                </motion.div>
               )}
 
               {/* Stats */}

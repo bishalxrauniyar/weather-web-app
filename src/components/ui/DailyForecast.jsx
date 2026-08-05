@@ -3,6 +3,42 @@ import { motion } from 'framer-motion';
 import Icon from './icons';
 import { toUnit, unitSymbol } from '../../storage/weatherUtils';
 
+/* Hourly rain per day from the forecast's per-hour feed (grouped by the same
+   calendar day the rail rows use). Falls back to 3h-block spreading when no
+   hourly feed exists. */
+function hourlyByDay(forecast) {
+  const list = forecast?.list || [];
+  const hourly = forecast?._hourly;
+  if (hourly?.length) return hourly;
+  const out = [];
+  list.forEach((i) => {
+    const rain = i.rain?.['3h'] ?? i.rain?.['1h'] ?? 0;
+    for (let k = 0; k < 3; k++) {
+      out.push({ dt: i.dt + k * 3600, rain: rain / 3, pop: i.pop || 0 });
+    }
+  });
+  return out;
+}
+
+/* Tiny per-hour rain bars for one day — height ∝ mm, tooltip = hour + mm. */
+function RainBars({ hours }) {
+  const max = Math.max(...hours.map((h) => h.rain), 0.01);
+  return (
+    <div className="rain-mini-bars" aria-hidden="true">
+      {hours.map((h) => {
+        const d = new Date(h.dt * 1000);
+        const t = d.toLocaleTimeString('en-US', { hour: 'numeric' });
+        const pct = Math.max(2, Math.round((h.rain / max) * 100));
+        return (
+          <div key={h.dt} className="rain-mini-bar" title={`${t} — ${h.rain.toFixed(1)} mm`}>
+            <div className="rain-mini-fill" style={{ height: `${pct}%` }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function DailyForecast({ forecast, units = 'metric', onSelect }) {
   const days = useMemo(() => {
     if (!forecast?.list) return [];
@@ -12,6 +48,15 @@ export default function DailyForecast({ forecast, units = 'metric', onSelect }) 
       const key = new Date(item.dt * 1000).toDateString();
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
+    });
+
+    /* Per-hour rain for each rail row — the same 10-day window as the rows. */
+    const hourly = hourlyByDay(forecast);
+    const rainByDay = new Map();
+    hourly.forEach((h) => {
+      const key = new Date(h.dt * 1000).toDateString();
+      if (!rainByDay.has(key)) rainByDay.set(key, []);
+      rainByDay.get(key).push(h);
     });
 
     return [...groups.values()].slice(0, 10).map((items, idx) => {
@@ -29,6 +74,7 @@ export default function DailyForecast({ forecast, units = 'metric', onSelect }) 
         pop: Math.round(Math.max(...pops) * 100),
         min: Math.round(Math.min(...temps)),
         max: Math.round(Math.max(...temps)),
+        rainHours: rainByDay.get(date.toDateString()) || [],
       };
     });
   }, [forecast, units]);
@@ -73,6 +119,8 @@ export default function DailyForecast({ forecast, units = 'metric', onSelect }) 
                   style={{ left: `${Math.min(left, 96)}%`, width: `${Math.min(width, 100 - Math.min(left, 96))}%` }}
                 />
               </div>
+              {/* Per-hour rain for the day — hover any bar for the exact hour */}
+              {day.rainHours.length > 0 && <RainBars hours={day.rainHours} />}
             </div>
             <span className="day-pop">{day.pop > 0 ? `${day.pop}%` : ''}</span>
             <div className="day-temps">

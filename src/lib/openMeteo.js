@@ -119,6 +119,17 @@ export async function openMeteoForecast(lat, lon) {
   const d = await (await fetch(`${FM}?${p}`)).json();
   const h = d.hourly;
 
+  /* Full per-hour data (240h = 10 days) — kept alongside the 3h blocks so
+     the forecast UI can draw per-hour rain graphs. */
+  const _hourly = h.time.map((t, i) => ({
+    dt: toUnix(t),
+    rain: h.rain?.[i] ?? 0,
+    pop: (h.precipitation_probability?.[i] ?? 0) / 100,
+    temp: h.temperature_2m?.[i] ?? null,
+    code: h.weather_code?.[i] ?? null,
+    isDay: h.is_day?.[i] ?? 1,
+  }));
+
   const list = [];
   /* Open-Meteo is hourly; take every 3rd entry to mirror OWM's 3-hour blocks. */
   for (let i = 0; i < h.time.length; i += 3) {
@@ -148,6 +159,7 @@ export async function openMeteoForecast(lat, lon) {
 
   return {
     list,
+    _hourly,
     city: { name: '', country: '' },
     alerts: (d.alerts || []).map((a) => ({
       event: a.title || 'Weather alert',

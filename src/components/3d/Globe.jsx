@@ -5,6 +5,7 @@ import { useWeatherStore } from '../../store/weatherStore';
 import { useInverseGeocode } from '../../hooks/useWeather';
 import { loadLiveClouds } from '../../lib/owmTiles';
 import MapLayer from './MapLayer';
+import DetailLayer from './DetailLayer';
 
 const cloudinessByType = {
   clear: 0.08,
@@ -43,11 +44,20 @@ export const sunBus = {
    fly or map-mode toggle. */
 export const camAnchor = { active: false, x: 0, y: 0, z: 0 };
 
+/* Deep-zoom detail state, published every frame by the Globe: `g` = camera
+   distance to the surface (world units), lat/lon = the point the camera is
+   aimed at (cursor anchor while wheeling, pin while focused, else the
+   screen centre). DetailLayer reads it and fetches sharper tiles. */
+export const detailBus = { g: 99, lat: 0, lon: 0, panning: false };
+
 /* Zoom-shrink factor for pins + labels — written each frame from the camera
    distance, read by PinMarker/TravelPin so they shrink while flying in.
    Squared falloff: the closer the camera gets, the smaller the text/pins
    become (linear scaling would keep them looking the same size on screen). */
 const pinZoom = { value: 1 };
+
+/* Scratch vector reused by the detailBus publish below (avoid GC churn). */
+const tmpDetail = new THREE.Vector3();
 
 /* 4096×2048 earth maps (three-globe demo assets, CORS-open) — loaded at
    runtime on top of the bundled 2048 textures when the network allows. */
@@ -78,7 +88,27 @@ function loadHiResImage(url) {
 /* Google-Earth-style map + night themes, derived from the satellite imagery:
    - map:   flat-style terrain colours (soft water blues, tan/green land)
    - night: dimmed albedo — the city-lights overlay carries the scene */
-function buildThemeTextures(srcImage) {
+/* Country border geometry for the "Countries" theme — Natural Earth admin-0
+   boundaries (johan's world.geo.json), fetched once and cached. */
+let countriesPromise = null;
+function loadCountries() {
+  if (!countriesPromise) {
+    countriesPromise = fetch(
+      'https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json'
+    )
+      .then((r) => {
+        if (!r.ok) throw new Error(`countries fetch failed (${r.status})`);
+        return r.json();
+      })
+      .catch((e) => {
+        countriesPromise = null;
+        throw e;
+      });
+  }
+  return countriesPromise;
+}
+
+function buildThemeTextures(srcImage, lightsImage, countries) {
   const mk = (canvas) => {
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -112,6 +142,9 @@ function buildThemeTextures(srcImage) {
   }
   mapCtx.putImageData(mapData, 0, 0);
 
+  /* Night: Black-Marble style — near-black ocean and land, with the real
+     city-lights map baked in (self-lit via the emissive map, so it reads
+     even under the dim night lighting). */
   const nightCanvas = document.createElement('canvas');
   nightCanvas.width = srcImage.width;
   nightCanvas.height = srcImage.height;
@@ -120,13 +153,81 @@ function buildThemeTextures(srcImage) {
   const nightData = nightCtx.getImageData(0, 0, nightCanvas.width, nightCanvas.height);
   const nd = nightData.data;
   for (let i = 0; i < nd.length; i += 4) {
-    nd[i] *= 0.1;
-    nd[i + 1] *= 0.11;
-    nd[i + 2] *= 0.18;
+    const lum = 0.299 * nd[i] + 0.587 * nd[i + 1] + 0.114 * nd[i + 2];
+    const isWater = nd[i + 2] > nd[i] + 14 && nd[i + 2] > nd[i + 1] + 10 && lum < 150;
+    if (isWater) {
+      nd[i] = 4;
+      nd[i + 1] = 8;
+      nd[i + 2] = 18;
+    } else {
+      const v = 6 + lum * 0.05;
+      nd[i] = v;
+      nd[i + 1] = v + 2;
+      nd[i + 2] = v + 6;
+    }
   }
   nightCtx.putImageData(nightData, 0, 0);
+  if (lightsImage) {
+    nightCtx.globalCompositeOperation = 'lighter';
+    nightCtx.drawImage(lightsImage, 0, 0, nightCanvas.width, nightCanvas.height);
+  }
 
-  return { map: mk(mapCanvas), night: mk(nightCanvas) };
+  /* Countries: soft relief base + political borders from the GeoJSON. */
+  const countryCanvas = document.createElement('canvas');
+  countryCanvas.width = srcImage.width;
+  countryCanvas.height = srcImage.height;
+  const countryCtx = countryCanvas.getContext('2d', { willReadFrequently: true });
+  countryCtx.drawImage(srcImage, 0, 0);
+  const countryData = countryCtx.getImageData(0, 0, countryCanvas.width, countryCanvas.height);
+  const cd = countryData.data;
+  for (let i = 0; i < cd.length; i += 4) {
+    const r = cd[i];
+    const g = cd[i + 1];
+    const b = cd[i + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const isWater = b > r + 14 && b > g + 10 && lum < 150;
+    if (isWater) {
+      cd[i] = 22;
+      cd[i + 1] = 42;
+      cd[i + 2] = 64;
+    } else {
+      /* Sandy paper-tone with subtle relief shading from the imagery. */
+      const t = Math.min(1, Math.max(0, (lum - 30) / 190));
+      const v = 196 - t * 26;
+      cd[i] = v + 16;
+      cd[i + 1] = v + 12;
+      cd[i + 2] = v - 14;
+    }
+  }
+  countryCtx.putImageData(countryData, 0, 0);
+  if (countries) {
+    const W = countryCanvas.width;
+    const H = countryCanvas.height;
+    const trace = (rings) => {
+      countryCtx.beginPath();
+      rings.forEach((ring) => {
+        ring.forEach(([lon, lat], i) => {
+          const x = ((lon + 180) / 360) * W;
+          const y = ((90 - lat) / 180) * H;
+          if (i === 0) countryCtx.moveTo(x, y);
+          else countryCtx.lineTo(x, y);
+        });
+        countryCtx.closePath();
+      });
+      countryCtx.stroke();
+    };
+    countryCtx.lineWidth = Math.max(1, W / 2600);
+    countryCtx.strokeStyle = 'rgba(52, 60, 78, 0.55)';
+    countryCtx.lineJoin = 'round';
+    for (const feat of countries.features || []) {
+      const geo = feat?.geometry;
+      if (!geo) continue;
+      if (geo.type === 'Polygon') trace(geo.coordinates);
+      else if (geo.type === 'MultiPolygon') geo.coordinates.forEach(trace);
+    }
+  }
+
+  return { map: mk(mapCanvas), night: mk(nightCanvas), country: mk(countryCanvas) };
 }
 
 /* Real-time global cloud cover — OWM cloud tiles (CORS-enabled), fetched
@@ -359,6 +460,13 @@ export default function Globe() {
      this, not the pointerup spot, so a slow press that drifts a couple of
      pixels still selects the place they intended. */
   const downClient = useRef({ x: 0, y: 0 });
+  /* Freeze the camera + earth matrices at the moment the pointer goes DOWN.
+     The click is resolved against these frozen matrices, not the live ones:
+     between press and release the focused camera can keep flying (the press
+     itself cancels the focus dive), so a slow click would otherwise land
+     somewhere the user never pointed at. */
+  const clickCam = useMemo(() => new THREE.PerspectiveCamera(60, 1, 0.1, 100), []);
+  const clickEarthInv = useRef(new THREE.Matrix4());
   /* Last accepted surface selection (coords + time) — used to detect a true
      double-click so we can suppress it without dropping fast different-spot
      clicks (those are deliberate moves and must never fall through). */
@@ -466,9 +574,17 @@ export default function Globe() {
         setFocused(false);
         globeFocus.active = false;
       } else if (e.key === '+' || e.key === '=') {
-        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 0.6, 0.7, 15);
+        if (globeFocus.active) {
+          globeFocus.dist = THREE.MathUtils.clamp(globeFocus.dist - 0.6, 3.35, 16);
+        } else {
+          camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z - 0.6, 0.35, 15);
+        }
       } else if (e.key === '-' || e.key === '_') {
-        camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z + 0.6, 0.7, 15);
+        if (globeFocus.active) {
+          globeFocus.dist = THREE.MathUtils.clamp(globeFocus.dist + 0.6, 3.35, 16);
+        } else {
+          camTarget.current.z = THREE.MathUtils.clamp(camTarget.current.z + 0.6, 0.35, 15);
+        }
       } else {
         return;
       }
@@ -497,16 +613,26 @@ export default function Globe() {
     lightsMap.anisotropy = 16;
   }, [atmosMap, normalMap, specularMap, lightsMap]);
 
-  /* Map / Night theme textures — derived from whichever satellite map is
-     active (4096 when available, otherwise the bundled 2048). */
+  /* Map / Night / Country theme textures — derived from whichever satellite
+     map is active (4096 when available, otherwise the bundled 2048). The
+     country borders fetch is best-effort; without it the country theme
+     falls back to a clean relief map. */
   const themeSource = hiRes?.map || atmosMap;
   useEffect(() => {
     const img = themeSource?.image;
     if (!img || !img.width) return;
     let cancelled = false;
-    const id = setTimeout(() => {
+    const id = setTimeout(async () => {
       try {
-        const built = buildThemeTextures(img);
+        let countries = null;
+        try {
+          countries = await loadCountries();
+        } catch {
+          /* offline — country theme renders without borders */
+        }
+        if (cancelled) return;
+        const lightsImg = (hiRes?.lights || lightsMap)?.image;
+        const built = buildThemeTextures(img, lightsImg, countries);
         if (!cancelled) setThemeTextures(built);
       } catch {
         /* keep satellite if processing fails */
@@ -516,7 +642,7 @@ export default function Globe() {
       cancelled = true;
       clearTimeout(id);
     };
-  }, [themeSource]);
+  }, [themeSource, lightsMap, hiRes]);
 
   const cloudTexture = useMemo(
     () => makeCloudTexture(cloudsImage.image, weatherType, liveClouds),
@@ -569,18 +695,34 @@ export default function Globe() {
   const pinPosition = useMemo(() => latLonToVec3(lat, lon, 1.5), [lat, lon]);
   const labelTexture = useMemo(() => makeLabelTexture(loc?.name || ''), [loc?.name]);
 
-  /* Theme → albedo map: satellite uses the photo maps; map/night use the
-     derived variants (falling back to the photo map while they render). */
+  /* Theme → albedo map: satellite uses the photo maps; map/night/country use
+     the derived variants (falling back to the photo map while they render).
+     The night texture also glows via the emissive map (below). */
   const albedoMap =
     earthTheme === 'map'
       ? themeTextures?.map || hiRes?.map || atmosMap
       : earthTheme === 'night'
         ? themeTextures?.night || hiRes?.map || atmosMap
-        : hiRes?.map || atmosMap;
+        : earthTheme === 'country'
+          ? themeTextures?.country || hiRes?.map || atmosMap
+          : hiRes?.map || atmosMap;
+
+  /* The night texture is self-lit — city lights baked into the albedo must
+     read under the (intentionally dim) night theme lighting. */
+  useEffect(() => {
+    const mat = matRef.current;
+    if (!mat) return;
+    const want = earthTheme === 'night' ? themeTextures?.night || null : null;
+    if (mat.emissiveMap !== want) {
+      mat.emissiveMap = want;
+      mat.needsUpdate = true;
+    }
+  }, [earthTheme, themeTextures]);
 
   /* Clouds render as a subtle tint (they're weather data, not the map) —
      dense cloud tops only, so no white film washes the globe. */
-  const cloudOpacity = earthTheme === 'night' ? 0.1 : earthTheme === 'map' ? 0.15 : 0.2;
+  const cloudOpacity =
+    earthTheme === 'night' ? 0.1 : earthTheme === 'map' || earthTheme === 'country' ? 0.15 : 0.2;
   const isNightTheme = earthTheme === 'night';
 
   /* Reverse-geocode the clicked point once resolved (race-proof: only applies to the coords it was fetched for) */
@@ -690,18 +832,26 @@ export default function Globe() {
       ((p.x - rect.left) / rect.width) * 2 - 1,
       -((p.y - rect.top) / rect.height) * 2 + 1
     );
-    /* The globe may be mid-rotation (drag or fly easing) — refresh the
-       camera + earth matrices so the ray hits the CURRENT surface, not the
-       one from the last rendered frame. */
-    camera.updateMatrixWorld();
-    rotateRef.current.updateWorldMatrix(true, false);
-    raycaster.setFromCamera(ndc, camera);
-    const hits = raycaster.intersectObject(rotateRef.current, false);
-    if (hits.length === 0) return;
+    /* The globe may be mid-rotation (drag or fly easing) — the click is
+       resolved against the camera + earth matrices frozen at pointer-down,
+       i.e. exactly what the user saw when they pressed, not the (possibly
+       already-drifted) state at release. */
+    raycaster.setFromCamera(ndc, clickCam);
 
-    const local = hits[0].point.clone();
-    rotateRef.current.worldToLocal(local);
-    const dir = local.normalize();
+    /* Intersect the press-time ray with the press-time earth sphere (radius
+       1.5) analytically in the frozen local frame — intersectObject would
+       use the CURRENT world matrix, which may still be tumbling. */
+    const inv = clickEarthInv.current;
+    const o = raycaster.ray.origin.clone().applyMatrix4(inv);
+    const d = raycaster.ray.direction.clone().transformDirection(inv);
+    const a = d.dot(d);
+    const b = o.dot(d);
+    const c = o.dot(o) - 1.5 * 1.5;
+    const disc = b * b - a * c;
+    if (a <= 0 || disc < 0) return;
+    const t = (-b - Math.sqrt(disc)) / a;
+    if (t < 0) return;
+    const dir = o.addScaledVector(d, t).normalize();
 
     const latDeg = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)) * 180 / Math.PI;
     /* atan2 spans (-180, 180]; subtracting 180 yields (-360, 0] — wrap it
@@ -723,7 +873,7 @@ export default function Globe() {
     setLocation({ name: fallback, lat: latDeg, lon: lonDeg });
     setPending({ lat: latDeg, lon: lonDeg });
     setGeoFor({ lat: latDeg, lon: lonDeg });
-  }, [camera, gl, ndc, raycaster, setLocation]);
+  }, [gl, ndc, raycaster, clickCam, clickEarthInv, setLocation]);
 
   /* Window-level drag listeners so rotation survives pointer leaving the globe.
      Attached once (not gated on `dragging`) so fast clicks never race the
@@ -780,7 +930,10 @@ export default function Globe() {
 
       if (focused) {
         /* Freshest distance instead of the (possible) stale closure value —
-           read it at event time so rapid scrolls chain smoothly. */
+           read it at event time so rapid scrolls chain smoothly. dist is the
+           camera's distance from the CENTRE along the pin line, so the floor
+           keeps the camera just above the surface (radius 3.3) — deep enough
+           to ride into the satellite detail bands. */
         const base = globeFocus.active ? globeFocus.dist : 4.5;
         globeFocus.dist = THREE.MathUtils.clamp(
           base * factor,
@@ -818,11 +971,10 @@ export default function Globe() {
       const dz = camera.position.z - az;
       const dist = Math.hypot(dx, dy, dz) || 1;
 
-      /* 2× closer than the old z=1.15 floor (~1.35 surface gap): the camera
-         can now ride down to ~0.7 off the surface, so the earth fills the
-         screen with city-level detail — the "200% more zoom" end of the
-         range. The far end stretches out to 15 for a wider overview. */
-      const newDist = THREE.MathUtils.clamp(dist * factor, 0.7, 15);
+      /* 2× closer than the 0.7 floor — the camera can ride down to ~0.35
+         off the surface, doubling the on-screen detail yet again. The far
+         end stretches out to 15 for a wider overview. */
+      const newDist = THREE.MathUtils.clamp(dist * factor, 0.35, 15);
       const k = newDist / dist;
 
       camAnchor.active = true;
@@ -864,11 +1016,16 @@ export default function Globe() {
       const [a, b] = [...pointers.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
       if (lastDist > 0) {
-        camTarget.current.z = THREE.MathUtils.clamp(
-          camTarget.current.z + (lastDist - dist) * 0.018,
-          0.7,
-          15
-        );
+        const step = (lastDist - dist) * 0.018;
+        if (globeFocus.active) {
+          globeFocus.dist = THREE.MathUtils.clamp(globeFocus.dist + step, 3.35, 16);
+        } else {
+          camTarget.current.z = THREE.MathUtils.clamp(
+            camTarget.current.z + step,
+            0.35,
+            15
+          );
+        }
       }
       lastDist = dist;
     };
@@ -951,20 +1108,20 @@ export default function Globe() {
       tmpQuat.current.setFromEuler(rot.rotation);
       sunBus.dir.copy(sunBase.current).applyQuaternion(tmpQuat.current).normalize();
       lightsMaterial.uniforms.sunDir.value.copy(sunBus.dir);
-      const target = isDaytime ? 0 : 1;
+      /* Night theme bakes its city lights into the albedo, so the overlay
+         stays off there; otherwise it masks only the dark side. */
+      const target = isNightTheme ? 0 : isDaytime ? 0 : 1;
       darkness.current += (target - darkness.current) * Math.min(1, delta * 2);
       lightsMaterial.uniforms.uDarkness.value = darkness.current;
-      /* Night theme = the whole earth is dark, city lights on everywhere */
-      const nightTarget = isNightTheme ? 1 : 0;
-      const forceNight = lightsMaterial.uniforms.uForceNight;
-      forceNight.value += (nightTarget - forceNight.value) * Math.min(1, delta * 3);
+      lightsMaterial.uniforms.uForceNight.value +=
+        (0 - lightsMaterial.uniforms.uForceNight.value) * Math.min(1, delta * 3);
     }
     if (atmRef.current) {
       const pulse = 1 + Math.sin(clock.elapsedTime * 0.5) * 0.01;
       atmRef.current.scale.setScalar(pulse);
     }
     if (matRef.current) {
-      matRef.current.emissiveIntensity = isDaytime ? 0.28 : 0.06;
+      matRef.current.emissiveIntensity = isNightTheme ? 0.95 : isDaytime ? 0.28 : 0.06;
     }
 
     /* Publish the camera-relative zoom for the pins + label chip, and — while
@@ -985,13 +1142,21 @@ export default function Globe() {
         globeFocus.cx = gp.x;
         globeFocus.cy = gp.y;
         globeFocus.cz = gp.z;
-        globeFocus.dist = camTarget.current.z + 3.5;
+        /* The wheel / +/- / pinch own the focus distance while the city is
+           pinned — do NOT re-derive it from camTarget every frame (that
+           reverted the user's zoom instantly). The focus effect seeds it. */
         rot.updateWorldMatrix(true, false);
-        pinWorld.current.copy(pinPosition);
-        rot.localToWorld(pinWorld.current);
-        globeFocus.pinX = pinWorld.current.x;
-        globeFocus.pinY = pinWorld.current.y;
-        globeFocus.pinZ = pinWorld.current.z;
+        /* World-space pin: local direction (rotation applied) scaled to the
+           world radius. localToWorld was publishing unscaled coords, which
+           put the camera inside the globe at deep zoom distances. */
+        pinWorld.current
+          .copy(pinPosition)
+          .normalize()
+          .applyQuaternion(rot.quaternion);
+        const wr = 1.5 * (groupRef.current.scale?.x ?? 1);
+        globeFocus.pinX = gp.x + pinWorld.current.x * wr;
+        globeFocus.pinY = gp.y + pinWorld.current.y * wr;
+        globeFocus.pinZ = gp.z + pinWorld.current.z * wr;
       }
     }
     if (labelRef.current) {
@@ -999,6 +1164,37 @@ export default function Globe() {
       labelScale.current += (pinZoom.value - labelScale.current) * Math.min(1, delta * 4);
       const s = labelScale.current;
       labelRef.current.scale.set(1.1 * s, 0.275 * s, 1);
+    }
+    if (rot && groupRef.current) {
+      /* Publish deep-zoom detail state: gap from the surface + the point
+         the camera is aimed at (cursor anchor while wheeling, pin while
+         focused, else the screen centre) in earth-local coordinates. */
+      tmpDetail.copy(camera.position);
+      rot.worldToLocal(tmpDetail);
+      detailBus.g = tmpDetail.length() - 1.5;
+      detailBus.panning = pointerDown.current;
+      if (detailBus.g < 2) {
+        let wx = camera.position.x;
+        let wy = camera.position.y;
+        let wz = camera.position.z;
+        if (camAnchor.active) {
+          wx = camAnchor.x;
+          wy = camAnchor.y;
+          wz = camAnchor.z;
+        } else if (globeFocus.active) {
+          wx = globeFocus.pinX;
+          wy = globeFocus.pinY;
+          wz = globeFocus.pinZ;
+        }
+        tmpDetail.set(wx, wy, wz);
+        rot.worldToLocal(tmpDetail);
+        if (tmpDetail.lengthSq() > 1e-8) {
+          tmpDetail.normalize();
+          const phi = Math.acos(THREE.MathUtils.clamp(tmpDetail.y, -1, 1));
+          detailBus.lat = 90 - (phi * 180) / Math.PI;
+          detailBus.lon = ((Math.atan2(tmpDetail.z, -tmpDetail.x) * 180) / Math.PI - 180 + 540) % 360 - 180;
+        }
+      }
     }
     if (groupRef.current) {
       groupRef.current.position.y = -2 + Math.sin(clock.elapsedTime * 0.15) * 0.08;
@@ -1038,6 +1234,16 @@ export default function Globe() {
             rotX: rotateRef.current.rotation.x,
             moved: 0,
           };
+          /* Freeze the exact view the user pressed on — the click resolves
+             against this snapshot, immune to the focus dive / drift that
+             starts right here. */
+          clickCam.position.copy(camera.position);
+          clickCam.quaternion.copy(camera.quaternion);
+          clickCam.projectionMatrix.copy(camera.projectionMatrix);
+          clickCam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+          clickCam.updateMatrixWorld();
+          rotateRef.current.updateWorldMatrix(true, false);
+          clickEarthInv.current.copy(rotateRef.current.matrixWorld).invert();
           setFocused(false);
           globeFocus.active = false;
         }}
@@ -1083,6 +1289,10 @@ export default function Globe() {
         {weatherLayers.wind && (
           <MapLayer layer="wind_new" radius={1.507} opacity={earthTheme === 'night' ? 0.5 : 0.62} alphaMode="brightness" />
         )}
+
+        {/* Deep-zoom satellite detail — sharper tiles fade in while the
+            camera rides close to the surface. */}
+        <DetailLayer />
 
         {travelPins.map((d) => (
           <TravelPin

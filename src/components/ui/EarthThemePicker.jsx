@@ -27,6 +27,18 @@ const THEMES = [
     ),
   },
   {
+    id: 'country',
+    label: 'Countries',
+    hint: 'Political borders',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeWidth={1.5} d="M3 12c0-4.4 3.6-8 8-8h2l-2 3 2 2-1 3h3l1 2-1 1h-3" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="12" cy="12" r="9" strokeWidth={1} />
+        <path strokeWidth={1} strokeLinecap="round" d="M3 12h18M12 3v18" />
+      </svg>
+    ),
+  },
+  {
     id: 'night',
     label: 'Night',
     hint: 'City lights everywhere',
